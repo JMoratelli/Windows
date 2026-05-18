@@ -134,9 +134,9 @@ do {
     Write-Host "[$IP] Criando a impressora '$NomeImpressora' no Windows..." -ForegroundColor Cyan
     Add-Printer -Name "$NomeImpressora" -DriverName $DriverName -PortName $PortName
 
-    # Configurações Nativas (Frente/Verso, Cassete e Comum)
-    Write-Host "[$IP] Configurando preferências de papel e Frente/Verso..." -ForegroundColor Cyan
-    Set-PrintConfiguration -PrinterName "$NomeImpressora" -Duplexing TwoSidedLongEdge
+    # Configurações Nativas (Frente/Verso, Cassete e Comum) - Desativado
+    #Write-Host "[$IP] Configurando preferências de papel e Frente/Verso..." -ForegroundColor Cyan
+    #Set-PrintConfiguration -PrinterName "$NomeImpressora" -Duplexing TwoSidedLongEdge
 
     $Config = Get-PrintConfiguration -PrinterName "$NomeImpressora"
     [xml]$Ticket = $Config.PrintTicketXML
