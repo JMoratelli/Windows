@@ -1,26 +1,34 @@
 # ====================================================================
-# CONFIGURA\UffffffffO INICIAL (Altere apenas o IP para escalar)
+# 1. PERGUNTAR IP E NOME DA IMPRESSORA (Interação com o Usuário)
 # ====================================================================
-$IP = "192.168.8.29"
-$DriverUrl = "http://192.168.12.223/uploads/InstaladorWindows/KyoceraDrivers.7z"
+Clear-Host
+Write-Host "=== INSTALADOR AUTOMÁTICO DE IMPRESSORAS KYOCERA ===" -ForegroundColor Green
+Write-Host ""
 
-# Pasta na raiz do C: para livre acesso do servi\Uffffffffde Spooler (SYSTEM)
+$IP = Read-Host "Digite o endereço IP da impressora (ex: 192.168.8.29)"
+if (-not $IP) { Write-Error "O IP não pode ser vazio."; return }
+
+$NomeImpressora = Read-Host "Digite o nome de exibição para a impressora (ex: KY-RH-LJ06)"
+if (-not $NomeImpressora) { Write-Error "O nome da impressora não pode ser vazio."; return }
+
+# URL do pacote de drivers e pastas locais
+$DriverUrl = "http://192.168.12.223/uploads/InstaladorWindows/KyoceraDrivers.7z"
 $TempDir = "C:\KyoceraDrivers"
 $ZipPath = "$TempDir\drivers.7z"
 
-# 1. CRIAR DIRET\UffffffffIO TEMPOR\UffffffffIO SEGURO
+# 2. CRIAR DIRETÓRIO TEMPORÁRIO SEGURO
 if (!(Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
 
-# 2. FAZER DOWNLOAD DO PACOTE DE DRIVERS (Apenas se n\Uffffffffexistir)
+# 3. FAZER DOWNLOAD DO PACOTE DE DRIVERS (Apenas se não existir)
 if (-not (Test-Path $ZipPath)) {
     Write-Host "[$IP] Baixando o pacote de drivers..." -ForegroundColor Cyan
     Invoke-WebRequest -Uri $DriverUrl -OutFile $ZipPath
 } else {
-    Write-Host "[$IP] O arquivo comprimido j\Uffffffffxiste localmente. Pulando download!" -ForegroundColor Yellow
+    Write-Host "[$IP] O arquivo comprimido de drivers já existe localmente. Pulando download!" -ForegroundColor Yellow
 }
 
-# 3. EXTRAIR O ARQUIVO .7z (Apenas se n\Uffffffffextra\Uffffffff)
-$InfFiles = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse -ErrorAction SilentlyContinue
+# 4. EXTRAIR O ARQUIVO .7z (Apenas se não extraído) 
+$InfFiles = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse -ErrorAction SilentlyContinue 
 if (-not $InfFiles) {
     Write-Host "[$IP] Extraindo os drivers..." -ForegroundColor Cyan
     if (Test-Path "C:\Program Files\7-Zip\7z.exe") {
@@ -28,36 +36,36 @@ if (-not $InfFiles) {
     } else {
         7z x $ZipPath "-o$TempDir" -y | Out-Null
     }
-    $InfFiles = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse
+    $InfFiles = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse 
 } else {
-    Write-Host "[$IP] Drivers j\Uffffffffxtra\Uffffffffs anteriormente. Pulando extra\Uffffffff!" -ForegroundColor Yellow
+    Write-Host "[$IP] Drivers já extraídos anteriormente. Pulando extração!" -ForegroundColor Yellow
 }
 
-# 4. CONSULTA SNMP
-Write-Host "[$IP] Consultando o modelo da impressora via SNMP..." -ForegroundColor Cyan
+# 5. CONSULTA SNMP (Para identificar o hardware real na rede)
+Write-Host "[$IP] Consultando o modelo do equipamento via SNMP..." -ForegroundColor Cyan
 $SNMP = New-Object -ComObject olePrn.OleSNMP
 $SNMP.Open($IP, "public")
 $ModeloCru = $SNMP.Get(".1.3.6.1.2.1.25.3.2.1.3.1")
 $SNMP.Close()
 
 if (-not $ModeloCru) {
-    Write-Error "[$IP] N\Ufffffffffoi poss\Uffffffffl obter o modelo via SNMP. Verifique a rede."
+    Write-Error "[$IP] Não foi possível obter o modelo via SNMP. Verifique a conexão de rede com a impressora."
     return
 }
-Write-Host "[$IP] Modelo detectado na rede: $ModeloCru" -ForegroundColor Green
+Write-Host "[$IP] Modelo de hardware detectado: $ModeloCru" -ForegroundColor Green
 
-# 5. ISOLAR O CODENOME DO MODELO (Ex: Extrai "M3655idn" de "ECOSYS M3655idn")
+# 6. ISOLAR O CODENOME DO MODELO (Ex: Extrai "M3655idn" de "ECOSYS M3655idn") 
 $CoreModel = $ModeloCru -split ' ' | Where-Object { $_ -match '\d' } | Select-Object -First 1
 if (-not $CoreModel) { $CoreModel = $ModeloCru }
 
-# 6. VARREDURA CIR\UffffffffGICA DO OEMSETUP.INF
+# 7. VARREDURA CIRÚRGICA DO OEMSETUP.INF 
 $InfPath = $null
 $DriverName = $null
 
 foreach ($file in $InfFiles) {
     $Lines = Get-Content $file.FullName
     foreach ($line in $Lines) {
-        # Captura apenas strings dentro de aspas antes do sinal de igual (=) 
+        # Procura a linha correspondente ao modelo dentro do INF 
         if ($line -match '^"([^"]+)"\s*=\s*([^,]+)') {
             $PossivelDriver = $Matches[1].Trim()
             $PossivelSecao = $Matches[2].Trim()
@@ -73,21 +81,20 @@ foreach ($file in $InfFiles) {
 }
 
 if (-not $InfPath -or -not $DriverName) {
-    Write-Error "[$IP] Erro: N\Ufffffffffoi poss\Uffffffffl localizar a linha de mapeamento para o driver de '$CoreModel'."
+    Write-Error "[$IP] Erro: Não foi possível localizar o driver para o modelo '$CoreModel' no arquivo OEMSETUP.INF." 
     return
 }
 
-Write-Host "[$IP] Nome do Driver mapeado: $DriverName" -ForegroundColor Green
-Write-Host "[$IP] Arquivo INF localizado: $InfPath" -ForegroundColor Green
+Write-Host "[$IP] Driver correspondente: $DriverName" -ForegroundColor Green
 
-# 7. CRIAR A PORTA TCP/IP
+# 8. CRIAR A PORTA TCP/IP
 $PortName = "IP_$IP"
 if (-not (Get-PrinterPort -Name $PortName -ErrorAction SilentlyContinue)) {
-    Write-Host "[$IP] Criando a porta de impress\Uffffffff($PortName)..." -ForegroundColor Cyan
+    Write-Host "[$IP] Criando a porta de impressão ($PortName)..." -ForegroundColor Cyan
     Add-PrinterPort -Name $PortName -PrinterHostAddress $IP
 }
 
-# 8. IGNORAR POP-UP DE SEGURAN\Uffffffff (Adiciona certificado digital)
+# 9. IGNORAR POP-UP DE SEGURANÇA (Instalação 100% silenciosa)
 $InfDirectory = Split-Path $InfPath
 $CatFile = Get-ChildItem -Path $InfDirectory -Filter "*.cat" | Select-Object -First 1
 if ($CatFile) {
@@ -100,68 +107,61 @@ if ($CatFile) {
     }
 }
 
-# 9. HOMOLOGAR PACOTE NO DRIVERSTORE
-Write-Host "[$IP] Injetando pacote no reposit\Uffffffff seguro (PnPUtil)..." -ForegroundColor Cyan
+# 10. HOMOLOGAR PACOTE NO DRIVERSTORE
+Write-Host "[$IP] Homologando o pacote de driver no Windows..." -ForegroundColor Cyan
 pnputil.exe /add-driver $InfPath | Out-Null
 
-# 10. REGISTRAR DRIVER VIA PRINTUI.DLL (Substitui\Uffffffff cir\Uffffffffa contra o erro 0x80070057)
-Write-Host "[$IP] Registrando driver no Spooler atrav\Uffffffffdo subsistema PrintUI..." -ForegroundColor Cyan
-$PrintUIArgs = "printui.dll,PrintUIEntry /ia /m `"$DriverName`" /f `"$InfPath`""
-$Process = Start-Process rundll32.exe -ArgumentList $PrintUIArgs -Wait -PassThru -NoNewWindow
+# 11. REGISTRAR DRIVER NO REPOSITÓRIO DE IMPRESSÃO (PrintUI) 
+Write-Host "[$IP] Registrando o driver no Spooler do sistema..." -ForegroundColor Cyan
+$PrintUIArgs = "printui.dll,PrintUIEntry /ia /m `"$DriverName`" /f `"$InfPath`"" 
+$Process = Start-Process rundll32.exe -ArgumentList $PrintUIArgs -Wait -PassThru -NoNewWindow 
 
 if ($Process.ExitCode -ne 0) {
-    Write-Error "[$IP] Falha cr\Uffffffffca ao registrar o driver via PrintUI. C\Uffffffffo de sa\Uffffffff: $($Process.ExitCode)"
+    Write-Error "[$IP] Falha ao registrar o driver através do subsistema PrintUI." 
     return
 }
 
-# ====================================================================
-# 11. CRIAR A IMPRESSORA DEFINITIVAMENTE
-# ====================================================================
-Write-Host "[$IP] Finalizando a cria\Uffffffff da impressora no Windows..." -ForegroundColor Cyan
-Add-Printer -Name $ModeloCru -DriverName $DriverName -PortName $PortName
+# 12. CRIAR A IMPRESSORA DEFINITIVAMENTE (Usa o nome escolhido por você)
+Write-Host "[$IP] Criando a impressora '$NomeImpressora' no Windows..." -ForegroundColor Cyan
+Add-Printer -Name "$NomeImpressora" -DriverName $DriverName -PortName $PortName
 
 # ====================================================================
-# 12. CONFIGURA\UffffffffES PADR\Uffffffff DE IMPRESS\Uffffffff (Ajustado para Kyocera)
+# 13. CONFIGURAÇÕES PADRÃO NATIVAS (Duplex, Cassete e Mídia Comum)
 # ====================================================================
-Write-Host "[$IP] Aplicando padr\Uffffffffde impress\Uffffffff(Duplex, Cassete e M\Uffffffffa Comum)..." -ForegroundColor Cyan
+Write-Host "[$IP] Configurando preferências de papel e Frente/Verso..." -ForegroundColor Cyan
 
-# 1. Ativar o Duplex (Frente e Verso)
-Set-PrintConfiguration -PrinterName "$ModeloCru" -Duplexing TwoSidedLongEdge
+# Ativar Frente e Verso automático
+Set-PrintConfiguration -PrinterName "$NomeImpressora" -Duplexing TwoSidedLongEdge
 
-# 2. Capturar o XML de configura\Uffffffffs da impressora
-$Config = Get-PrintConfiguration -PrinterName "$ModeloCru"
+# Manipular o XML interno da impressora criada
+$Config = Get-PrintConfiguration -PrinterName "$NomeImpressora"
 [xml]$Ticket = $Config.PrintTicketXML
 
-# Criar o gerenciador de mapa do XML
 $nsm = New-Object System.Xml.XmlNamespaceManager($Ticket.NameTable)
 $nsm.AddNamespace("psf", "http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework")
 
-# 3. ALTERAR A ORIGEM DO PAPEL (Para o psk:Cassette que voc\Uffffffffncontrou)
+# Forçar a origem para "psk:Cassette" (o termo correto que você descobriu)
 $BinNode = $Ticket.SelectSingleNode("//psf:Feature[@name='psk:PageInputBin']/psf:Option", $nsm)
 if ($BinNode) {
     $BinNode.SetAttribute("name", "psk:Cassette")
-    Write-Host "[$IP] -> Origem definida para: Cassete" -ForegroundColor Yellow
 } else {
-    # Se o n\Ufffffffftiver oculto, for\Uffffffffa cria\Uffffffff dele com o nome correto
     $FragmentBin = $Ticket.CreateDocumentFragment()
     $FragmentBin.InnerXml = '<psf:Feature name="psk:PageInputBin"><psf:Option name="psk:Cassette" /></psf:Feature>'
     $Ticket.DocumentElement.AppendChild($FragmentBin) | Out-Null
-    Write-Host "[$IP] -> Origem injetada com sucesso: Cassete" -ForegroundColor Yellow
 }
 
-# 4. ALTERAR O TIPO DE M\UffffffffIA (Papel Comum)
+# Forçar a mídia para Papel Comum ("psk:Plain")
 $MediaNode = $Ticket.SelectSingleNode("//psf:Feature[@name='psk:PageMediaType']/psf:Option", $nsm)
 if ($MediaNode) {
     $MediaNode.SetAttribute("name", "psk:Plain")
-    Write-Host "[$IP] -> Tipo de m\Uffffffffa definido para: Comum (Plain)" -ForegroundColor Yellow
 } else {
     $FragmentMedia = $Ticket.CreateDocumentFragment()
     $FragmentMedia.InnerXml = '<psf:Feature name="psk:PageMediaType"><psf:Option name="psk:Plain" /></psf:Feature>'
     $Ticket.DocumentElement.AppendChild($FragmentMedia) | Out-Null
-    Write-Host "[$IP] -> Tipo de m\Uffffffffa injetado com sucesso: Comum (Plain)" -ForegroundColor Yellow
 }
 
-# 5. Salvar o XML modificado de volta na impressora
-Set-PrintConfiguration -PrinterName "$ModeloCru" -PrintTicketXML $Ticket.OuterXml
+# Salvar as alterações de volta na impressora
+Set-PrintConfiguration -PrinterName "$NomeImpressora" -PrintTicketXML $Ticket.OuterXml
 
-Write-Host "?? Impressora $ModeloCru instalada e configurada com sucesso no IP $IP!" -ForegroundColor Green
+Write-Host ""
+Write-Host "🎉 SUCESSO: A impressora '$NomeImpressora' foi instalada no IP $IP com Duplex e Cassete configurados!" -ForegroundColor Green
