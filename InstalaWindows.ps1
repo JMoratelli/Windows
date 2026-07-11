@@ -175,6 +175,79 @@ winget install -e --id Skillbrains.Lightshot --silent --scope machine --accept-p
 
 Write-Host "Processo de verificação e instalação de todos os softwares concluído."
 
+#ConfiguraSIPGonnect
+# 1. PERGUNTA INICIAL
+$resposta = Read-Host "Deseja instalar o SIP (Ramal)? [S/N]"
+
+# Correção: Removido o "-clear" que causava o erro de sintaxe
+if ($resposta -match "^[Ss]") {
+    Write-Host "--- Iniciando processo do GOnnect (SIP) ---" -ForegroundColor Cyan
+
+    # 2. VERIFICAR SE JÁ ESTÁ INSTALADO
+    Write-Host "Verificando se o GOnnect ja esta instalado..."
+    $jaInstalado = Get-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue | 
+                   Where-Object { $_.DisplayName -like "*GOnnect*" }
+
+    if ($jaInstalado) {
+        Write-Host "GOnnect ja esta instalado nesta maquina. Pulando processo." -ForegroundColor Green
+    } 
+    else {
+        Write-Host "Buscando a versao mais recente no GitHub..." -ForegroundColor Yellow
+
+        try {
+            # 3. CONSULTAR A API DO GITHUB
+            $urlApi = "https://api.github.com/repos/gonicus/gonnect/releases/latest"
+            $respostaApi = Invoke-RestMethod -Uri $urlApi -UseBasicParsing -ErrorAction Stop
+            
+            $assetValido = $respostaApi.assets | Where-Object { $_.name -like "*win64.exe" } | Select-Object -First 1
+            
+            if (-not $assetValido) {
+                Write-Host "Erro: Nao foi possivel localizar o arquivo win64.exe no GitHub." -ForegroundColor Red
+                return
+            }
+
+            $urlDownload = $assetValido.browser_download_url
+            $nomeDoArquivo = $assetValido.name
+            $destinoLocal = "$env:TEMP\$nomeDoArquivo"
+
+            # 4. DOWNLOAD
+            Write-Host "Baixando $nomeDoArquivo..." -ForegroundColor Cyan
+            Invoke-WebRequest -Uri $urlDownload -OutFile $destinoLocal -UseBasicParsing -ErrorAction Stop
+            
+            # 5. INSTALAÇÃO SILENCIOSA (ALL USERS)
+            Write-Host "Iniciando instalacao silenciosa para todos os usuarios..." -ForegroundColor Green
+            Start-Process -FilePath $destinoLocal -ArgumentList "/S" -Wait -NoNewWindow
+            
+            # 6. CONFIGURAR INICIALIZAÇÃO AUTOMÁTICA (MÁQUINA TODA)
+            $caminhoExeGonnect = "C:\Program Files\GOnnect\GOnnect.exe"
+            
+            if (Test-Path -LiteralPath $caminhoExeGonnect) {
+                Write-Host "Configurando para iniciar automaticamente com o computador..." -ForegroundColor Yellow
+                
+                $caminhoRegistroRun = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+                New-ItemProperty -Path $caminhoRegistroRun -Name "GOnnect" -Value "`"$caminhoExeGonnect`"" -PropertyType String -Force | Out-Null
+                
+                Write-Host "Inicializacao automatica configurada com sucesso!" -ForegroundColor Green
+            } else {
+                Write-Host "Aviso: O executavel nao foi encontrado no caminho padrao. Inicializacao automatica nao configurada." -ForegroundColor DarkGray
+            }
+
+            # 7. LIMPEZA
+            Write-Host "Limpando arquivo temporario..." -ForegroundColor Yellow
+            Remove-Item -Path $destinoLocal -Force
+            
+            Write-Host "Processo concluido com sucesso!" -ForegroundColor Green
+        } 
+        catch {
+            Write-Host "Erro durante o processo do GOnnect: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+} else {
+    Write-Host "Instalacao do SIP (Ramal) pulada pelo usuario." -ForegroundColor Yellow
+}
+Write-Host "--------------------------------------------------------"
+#Fim Instala Gonnect SIP
+
 #Configura impressora
 $Pergunta = Read-Host "Deseja instalar as impressoras? (S/N)"
 
