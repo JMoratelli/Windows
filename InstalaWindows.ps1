@@ -110,53 +110,38 @@ catch {
 }
 #Fim Instala Ninite
 
-#Instala UVNC
+# Instala UVNC
 Write-Host "--- Verificando Instalacao do UltraVNC ---" -ForegroundColor Cyan
 
 $pastaVnc = "C:\Program Files\uvnc bvba\UltraVNC"
 $exeVnc = Join-Path $pastaVnc "winvnc.exe"
 
-# TRAVA: Verifica se o executável principal já existe na pasta de destino
 if (Test-Path -LiteralPath $exeVnc) {
-    Write-Host "UltraVNC ja instalado e configurado nesta maquina. Pulando instalacao." -ForegroundColor Green
+    Write-Host "UltraVNC ja instalado nesta maquina. Pulando instalacao." -ForegroundColor Green
 }
 else {
-    Write-Host "UltraVNC nao encontrado. Iniciando instalacao..." -ForegroundColor Yellow
+    Write-Host "UltraVNC nao encontrado. Baixando instalador..." -ForegroundColor Yellow
 
     $urlVnc = "http://192.168.12.223/uploads/InstaladorWindows/ultravnc.msi"
     $destinoVnc = "$env:TEMP\ultravnc.msi"
 
     try {
-        Write-Host "Baixando o UltraVNC (MSI)..."
         Invoke-WebRequest -Uri $urlVnc -OutFile $destinoVnc -UseBasicParsing -ErrorAction Stop
         
-        Write-Host "Executando instalacao silenciosa..."
-        # Deixamos ele instalar o padrao sem reclamar para nao falhar
-        $argumentosMsi = "/i `"$destinoVnc`" /qn /norestart ALLUSERS=1"
-        Start-Process -FilePath "msiexec.exe" -ArgumentList $argumentosMsi -Wait -NoNewWindow
+        Write-Host "Abrindo instalador do UltraVNC. Faça a configuracao manual..." -ForegroundColor Cyan
+        Write-Host "(O script continuara automaticamente quando voce fechar o instalador)" -ForegroundColor Yellow
+        
+        # Abre o MSI normalmente (sem /qn) e aguarda o término (-Wait)
+        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$destinoVnc`"" -Wait -NoNewWindow
         
         if (Test-Path -LiteralPath $exeVnc) {
-            Write-Host "Instalacao base concluida. Removendo Viewer e Repeater..." -ForegroundColor Yellow
-            
-            # A Mágica: Caça e deleta qualquer executável que seja do Viewer ou do Repeater
-            Get-ChildItem -Path $pastaVnc -Filter "*viewer*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
-            Get-ChildItem -Path $pastaVnc -Filter "*repeater*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
-            
-            Write-Host "Lixo removido! Configurando o servico do VNC Server..." -ForegroundColor Green
-            
-            # Forca o registro do VNC no Windows Services
-            Start-Process -FilePath $exeVnc -ArgumentList "-install" -Wait -NoNewWindow
-            
-            # Inicia o servico
-            Start-Service -Name "uvnc_service" -ErrorAction SilentlyContinue
-            
-            Write-Host "Servico do UltraVNC registrado e iniciado com sucesso!" -ForegroundColor Green
+            Write-Host "Instalacao do UltraVNC concluida com sucesso!" -ForegroundColor Green
         } else {
-            Write-Host "ERRO: O msiexec rodou, mas o VNC nao foi encontrado na pasta." -ForegroundColor Red
+            Write-Host "Aviso: A instalacao foi cancelada ou instalada em outro diretorio." -ForegroundColor Red
         }
         
-        Write-Host "Limpando instalador temporario..."
-        Remove-Item -Path $destinoVnc -Force
+        # Limpa o arquivo MSI baixado
+        Remove-Item -Path $destinoVnc -Force -ErrorAction SilentlyContinue
     } 
     catch {
         Write-Host "Erro durante o processo do UltraVNC: $($_.Exception.Message)" -ForegroundColor Red
