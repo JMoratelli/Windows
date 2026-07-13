@@ -1,3 +1,4 @@
+#Refaz Passos de Instalação Windows
 # Este script busca os instaladores nas unidades de disco e inicia a instalação
 # de forma sequencial, garantindo que o usuário veja e interaja com os prompts de cada instalador.
 # Instala BitDefender================================================================================================
