@@ -230,7 +230,7 @@ if ($resposta -match "^[Ss]") {
     }
 
     # ACOPLA A CONFIGURACAO DO RAMAL LOGO APOS GARANTIR A INSTALACAO
-    $caminhoExeGonnect = "C:\Program Files\GOnnect\GOnnect.exe"
+    $caminhoExeGonnect = "C:\Program Files\Gonnect\bin\gonnect.exe"
     if (Test-Path -LiteralPath $caminhoExeGonnect) {
         Write-Host "Abrindo tela de configuracao do Ramal..." -ForegroundColor Cyan
         Show-ConfiguracaoRamal
