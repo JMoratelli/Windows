@@ -1,3 +1,4 @@
+#Instala e Configura Impressoras Kyocera
 # ====================================================================
 # PREPARAÇÃO INICIAL (Executado apenas uma vez no início)
 # ====================================================================
