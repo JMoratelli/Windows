@@ -12,8 +12,6 @@ $ScriptsMenu = @(
     [PSCustomObject]@{ Legenda = "Refaz Instalação de pacotes Windows";    Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaWindows.ps1" }
     # <<< Adicione novas linhas aqui, sempre no mesmo padrao >>>
 )
-    # <<< Adicione novas linhas aqui, sempre no mesmo padrao >>>
-)
 
 $LarguraMenu = 72
 
