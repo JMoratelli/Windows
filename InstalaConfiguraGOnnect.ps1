@@ -1,3 +1,4 @@
+#Instala e Configura SIP GOnnect
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
