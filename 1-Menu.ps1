@@ -51,7 +51,7 @@ function Show-Header {
     $corAdmin    = if (Test-IsAdmin) { "Green" } else { "Yellow" }
 
     Write-Linha "=" "DarkCyan"
-    Write-Centralizado "PAINEL DE SCRIPTS - $($env:COMPUTERNAME)" "Cyan"
+    Write-Centralizado "PAINEL DE SCRIPTS @JJMoratelli - $($env:COMPUTERNAME)" "Cyan"
     Write-Linha "=" "DarkCyan"
     Write-Host (" Maquina.......: {0}"           -f $env:COMPUTERNAME)
     Write-Host (" Usuario.......: {0}\{1}"       -f $env:USERDOMAIN, $env:USERNAME)
