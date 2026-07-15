@@ -165,7 +165,6 @@ Write-Host "Processo de verificação e instalação de todos os softwares concl
 # 1. PERGUNTA INICIAL
 $resposta = Read-Host "Deseja instalar o SIP (Ramal)? [S/N]"
 
-# Correção: Removido o "-clear" que causava o erro de sintaxe
 if ($resposta -match "^[Ss]") {
     Write-Host "--- Iniciando processo do GOnnect (SIP) ---" -ForegroundColor Cyan
 
@@ -204,18 +203,29 @@ if ($resposta -match "^[Ss]") {
             Write-Host "Iniciando instalacao silenciosa para todos os usuarios..." -ForegroundColor Green
             Start-Process -FilePath $destinoLocal -ArgumentList "/S" -Wait -NoNewWindow
             
-            # 6. CONFIGURAR INICIALIZAÇÃO AUTOMÁTICA (MÁQUINA TODA)
+            # 6. CONFIGURAR INICIALIZAÇÃO AUTOMÁTICA E ATALHO (MÁQUINA TODA)
             $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
             
             if (Test-Path -LiteralPath $caminhoExeGonnect) {
-                Write-Host "Configurando para iniciar automaticamente com o computador..." -ForegroundColor Yellow
+                Write-Host "Criando atalhos na Area de Trabalho e na pasta de Inicializacao..." -ForegroundColor Yellow
                 
-                $caminhoRegistroRun = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-                New-ItemProperty -Path $caminhoRegistroRun -Name "GOnnect" -Value "`"$caminhoExeGonnect`"" -PropertyType String -Force | Out-Null
+                $WshShell = New-Object -ComObject WScript.Shell
                 
-                Write-Host "Inicializacao automatica configurada com sucesso!" -ForegroundColor Green
+                # 6.1 Criar Atalho na pasta Startup (Inicializar com o Windows para todos os usuários)
+                $caminhoStartup = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk"
+                $AtalhoStartup = $WshShell.CreateShortcut($caminhoStartup)
+                $AtalhoStartup.TargetPath = $caminhoExeGonnect
+                $AtalhoStartup.Save()
+                
+                # 6.2 Criar Atalho na Área de Trabalho (Todos os usuários)
+                $caminhoDesktop = "$env:Public\Desktop\GOnnect.lnk"
+                $AtalhoDesktop = $WshShell.CreateShortcut($caminhoDesktop)
+                $AtalhoDesktop.TargetPath = $caminhoExeGonnect
+                $AtalhoDesktop.Save()
+                
+                Write-Host "Atalhos e inicializacao automatica configurados com sucesso!" -ForegroundColor Green
             } else {
-                Write-Host "Aviso: O executavel nao foi encontrado no caminho padrao. Inicializacao automatica nao configurada." -ForegroundColor DarkGray
+                Write-Host "Aviso: O executavel nao foi encontrado no caminho ($caminhoExeGonnect). Inicializacao automatica e atalho nao configurados." -ForegroundColor DarkGray
             }
 
             # 7. LIMPEZA
