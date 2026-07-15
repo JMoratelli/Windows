@@ -136,19 +136,35 @@ data=$Senha
             # Salva ou substitui o arquivo com codificacao limpa
             Set-Content -Path $CaminhoCompleto -Value $ConteudoINI -Force -Encoding UTF8
 
-            # PROGRAMA O GONNECT PARA INICIAR NOS PROXIMOS REBOOTS (HKCU)
             $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
+            $pastaTrabalho = "C:\Program Files\GOnnect\bin"
+
+            # 1. PROGRAMA O GONNECT PARA INICIAR NOS PROXIMOS REBOOTS E CRIA ATALHOS
             if (Test-Path -LiteralPath $caminhoExeGonnect) {
-                $caminhoRegistroRun = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-                New-ItemProperty -Path $caminhoRegistroRun -Name "GOnnect" -Value "`"$caminhoExeGonnect`"" -PropertyType String -Force | Out-Null
+                $WshShell = New-Object -ComObject WScript.Shell
+                
+                # Atalho na pasta Startup de todos os usuários
+                $caminhoStartup = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk"
+                $AtalhoStartup = $WshShell.CreateShortcut($caminhoStartup)
+                $AtalhoStartup.TargetPath = $caminhoExeGonnect
+                $AtalhoStartup.WorkingDirectory = $pastaTrabalho
+                $AtalhoStartup.Save()
+                
+                # Atalho na Área de Trabalho de todos os usuários
+                $caminhoDesktop = "$env:Public\Desktop\GOnnect.lnk"
+                $AtalhoDesktop = $WshShell.CreateShortcut($caminhoDesktop)
+                $AtalhoDesktop.TargetPath = $caminhoExeGonnect
+                $AtalhoDesktop.WorkingDirectory = $pastaTrabalho
+                $AtalhoDesktop.Save()
             }
 
-            [System.Windows.Forms.MessageBox]::Show("Configuracao salva com sucesso!", "Sucesso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-
-            # Abre o GOnnect ja logado com as novas credenciais
+            # 2. INICIA O PROGRAMA IMEDIATAMENTE AGORA QUE O CONF FOI SALVO
             if (Test-Path -LiteralPath $caminhoExeGonnect) {
-                Start-Process -FilePath $caminhoExeGonnect -NoNewWindow
+                Start-Process -FilePath $caminhoExeGonnect -WorkingDirectory $pastaTrabalho -NoNewWindow
             }
+
+            # 3. MENSAGEM DE SUCESSO E FECHAR TELA
+            [System.Windows.Forms.MessageBox]::Show("Configuracao salva e GOnnect iniciado com sucesso!", "Sucesso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 
             $Form.Close()
         }
@@ -203,18 +219,32 @@ if ($resposta -match "^[Ss]") {
             Write-Host "Iniciando instalacao silenciosa para todos os usuarios..." -ForegroundColor Green
             Start-Process -FilePath $destinoLocal -ArgumentList "/S" -Wait -NoNewWindow
 
-            # CONFIGURAR INICIALIZACAO AUTOMATICA (MAQUINA TODA)
-            $caminhoExeGonnect = "C:\Program Files\GOnnect\GOnnect.exe"
+            # CONFIGURAR INICIALIZACAO AUTOMATICA E ATALHOS (MAQUINA TODA)
+            $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
+            $pastaTrabalho = "C:\Program Files\GOnnect\bin"
 
             if (Test-Path -LiteralPath $caminhoExeGonnect) {
-                Write-Host "Configurando para iniciar automaticamente com o computador..." -ForegroundColor Yellow
+                Write-Host "Criando atalhos na Area de Trabalho e na pasta de Inicializacao..." -ForegroundColor Yellow
 
-                $caminhoRegistroRun = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-                New-ItemProperty -Path $caminhoRegistroRun -Name "GOnnect" -Value "`"$caminhoExeGonnect`"" -PropertyType String -Force | Out-Null
+                $WshShell = New-Object -ComObject WScript.Shell
+                
+                # Criar Atalho na pasta Startup
+                $caminhoStartup = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk"
+                $AtalhoStartup = $WshShell.CreateShortcut($caminhoStartup)
+                $AtalhoStartup.TargetPath = $caminhoExeGonnect
+                $AtalhoStartup.WorkingDirectory = $pastaTrabalho
+                $AtalhoStartup.Save()
+                
+                # Criar Atalho na Área de Trabalho
+                $caminhoDesktop = "$env:Public\Desktop\GOnnect.lnk"
+                $AtalhoDesktop = $WshShell.CreateShortcut($caminhoDesktop)
+                $AtalhoDesktop.TargetPath = $caminhoExeGonnect
+                $AtalhoDesktop.WorkingDirectory = $pastaTrabalho
+                $AtalhoDesktop.Save()
 
-                Write-Host "Inicializacao automatica configurada com sucesso!" -ForegroundColor Green
+                Write-Host "Atalhos e inicializacao automatica configurados com sucesso!" -ForegroundColor Green
             } else {
-                Write-Host "Aviso: O executavel nao foi encontrado no caminho padrao. Inicializacao automatica nao configurada." -ForegroundColor DarkGray
+                Write-Host "Aviso: O executavel nao foi encontrado no caminho ($caminhoExeGonnect). Inicializacao automatica e atalho nao configurados." -ForegroundColor DarkGray
             }
 
             # LIMPEZA
@@ -231,7 +261,7 @@ if ($resposta -match "^[Ss]") {
     }
 
     # ACOPLA A CONFIGURACAO DO RAMAL LOGO APOS GARANTIR A INSTALACAO
-    $caminhoExeGonnect = "C:\Program Files\Gonnect\bin\gonnect.exe"
+    $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
     if (Test-Path -LiteralPath $caminhoExeGonnect) {
         Write-Host "Abrindo tela de configuracao do Ramal..." -ForegroundColor Cyan
         Show-ConfiguracaoRamal
