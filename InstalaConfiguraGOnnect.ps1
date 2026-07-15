@@ -137,7 +137,7 @@ data=$Senha
             Set-Content -Path $CaminhoCompleto -Value $ConteudoINI -Force -Encoding UTF8
 
             # PROGRAMA O GONNECT PARA INICIAR NOS PROXIMOS REBOOTS (HKCU)
-            $caminhoExeGonnect = "C:\Program Files\GOnnect\GOnnect.exe"
+            $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
             if (Test-Path -LiteralPath $caminhoExeGonnect) {
                 $caminhoRegistroRun = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
                 New-ItemProperty -Path $caminhoRegistroRun -Name "GOnnect" -Value "`"$caminhoExeGonnect`"" -PropertyType String -Force | Out-Null
