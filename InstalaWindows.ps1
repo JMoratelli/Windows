@@ -205,7 +205,7 @@ if ($resposta -match "^[Ss]") {
             Start-Process -FilePath $destinoLocal -ArgumentList "/S" -Wait -NoNewWindow
             
             # 6. CONFIGURAR INICIALIZAÇÃO AUTOMÁTICA (MÁQUINA TODA)
-            $caminhoExeGonnect = "C:\Program Files\GOnnect\GOnnect.exe"
+            $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
             
             if (Test-Path -LiteralPath $caminhoExeGonnect) {
                 Write-Host "Configurando para iniciar automaticamente com o computador..." -ForegroundColor Yellow
