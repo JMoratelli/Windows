@@ -133,8 +133,19 @@ type=plain
 data=$Senha
 "@
 
-            # Salva ou substitui o arquivo com codificacao limpa
+            # Salva ou substitui o arquivo com codificacao limpa (01-sip.conf)
             Set-Content -Path $CaminhoCompleto -Value $ConteudoINI -Force -Encoding UTF8
+
+            # GERAR O ARQUIVO 99-USER.CONF
+            $CaminhoUserConf = Join-Path $CaminhoDestino "99-user.conf"
+            $ConteudoUserConf = @"
+[generic]
+showTrayDialog=true
+noSyncSystemMute=false
+showMainWindowOnStart=true
+useOwnWindowDecoration=false
+"@
+            Set-Content -Path $CaminhoUserConf -Value $ConteudoUserConf -Force -Encoding UTF8
 
             $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
             $pastaTrabalho = "C:\Program Files\GOnnect\bin"
@@ -158,13 +169,8 @@ data=$Senha
                 $AtalhoDesktop.Save()
             }
 
-            # 2. INICIA O PROGRAMA IMEDIATAMENTE AGORA QUE O CONF FOI SALVO
-            if (Test-Path -LiteralPath $caminhoExeGonnect) {
-                Start-Process -FilePath $caminhoExeGonnect -WorkingDirectory $pastaTrabalho -NoNewWindow
-            }
-
-            # 3. MENSAGEM DE SUCESSO E FECHAR TELA
-            [System.Windows.Forms.MessageBox]::Show("Configuracao salva e GOnnect iniciado com sucesso!", "Sucesso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            # 2. MENSAGEM DE SUCESSO E FECHAR TELA (Inicialização movida para o final do script)
+            [System.Windows.Forms.MessageBox]::Show("Configuracao salva com sucesso! O GOnnect sera iniciado em seguida.", "Sucesso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 
             $Form.Close()
         }
@@ -262,9 +268,15 @@ if ($resposta -match "^[Ss]") {
 
     # ACOPLA A CONFIGURACAO DO RAMAL LOGO APOS GARANTIR A INSTALACAO
     $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
+    $pastaTrabalho = "C:\Program Files\GOnnect\bin"
     if (Test-Path -LiteralPath $caminhoExeGonnect) {
         Write-Host "Abrindo tela de configuracao do Ramal..." -ForegroundColor Cyan
         Show-ConfiguracaoRamal
+
+        # INICIA O PROGRAMA POR ULTIMO DE TUDO APOS A INSTALACAO E CONFIGURACAO
+        Write-Host "Iniciando o GOnnect..." -ForegroundColor Green
+        Start-Process -FilePath $caminhoExeGonnect -WorkingDirectory $pastaTrabalho -NoNewWindow
+
     } else {
         Write-Host "GOnnect nao foi encontrado apos a instalacao. Configuracao do Ramal nao sera exibida." -ForegroundColor Red
     }
