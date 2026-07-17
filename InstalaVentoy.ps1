@@ -2,7 +2,7 @@
 # ==============================================================================
 # CONFIGURAÇÃO DE SCRIPT
 # ==============================================================================
-$IsoName = "Win11_25H2_JJ-MachadaoCorpV2.iso"
+$IsoName = "Win11_25H2_JJ-MachadaoCorpV3.iso"
 $DownloadsFolder = "$HOME\Downloads"
 $VentoyExtractRoot = Join-Path $DownloadsFolder "VentoyExtracted"
 
