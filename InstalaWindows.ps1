@@ -112,7 +112,6 @@ catch {
 
 # Instala UVNC
 Write-Host "--- Verificando Instalacao do UltraVNC ---" -ForegroundColor Cyan
-
 $pastaVnc = "C:\Program Files\uvnc bvba\UltraVNC"
 $exeVnc = Join-Path $pastaVnc "winvnc.exe"
 
@@ -121,28 +120,33 @@ if (Test-Path -LiteralPath $exeVnc) {
 }
 else {
     Write-Host "UltraVNC nao encontrado. Baixando instalador..." -ForegroundColor Yellow
-
-    $urlVnc = "http://192.168.12.223/uploads/InstaladorWindows/ultravnc.msi"
-    $destinoVnc = "$env:TEMP\ultravnc.msi"
+    # Use o instalador .exe (Inno Setup), nao o .msi -- e ele que aceita /COMPONENTS e /TASKS
+    $urlVnc = "http://192.168.12.223/uploads/InstaladorWindows/UltraVNC_Setup.exe"
+    $destinoVnc = "$env:TEMP\UltraVNC_Setup.exe"
 
     try {
         Invoke-WebRequest -Uri $urlVnc -OutFile $destinoVnc -UseBasicParsing -ErrorAction Stop
-        
-        Write-Host "Abrindo instalador do UltraVNC. Faça a configuracao manual..." -ForegroundColor Cyan
-        Write-Host "(O script continuara automaticamente quando voce fechar o instalador)" -ForegroundColor Yellow
-        
-        # Abre o MSI normalmente (sem /qn) e aguarda o término (-Wait)
-        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$destinoVnc`"" -Wait -NoNewWindow
-        
+
+        Write-Host "Instalando UltraVNC (somente Server, como servico, com driver de video)..." -ForegroundColor Cyan
+
+        # /COMPONENTS -> instala SOMENTE o Server (sem Viewer e sem Repeater)
+        # /TASKS      -> registra como servico do Windows + instala o mirror driver
+        # /VERYSILENT -> sem interface grafica, sem interacao manual
+        # /NORESTART  -> nao reinicia a maquina no final
+        $argsVnc = '/TYPE=custom /COMPONENTS="ultravnc_server" /TASKS="installservice,installdriver" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS'
+
+        Start-Process -FilePath $destinoVnc -ArgumentList $argsVnc -Wait -NoNewWindow
+
+        Start-Sleep -Seconds 3
+
         if (Test-Path -LiteralPath $exeVnc) {
             Write-Host "Instalacao do UltraVNC concluida com sucesso!" -ForegroundColor Green
         } else {
-            Write-Host "Aviso: A instalacao foi cancelada ou instalada em outro diretorio." -ForegroundColor Red
+            Write-Host "Aviso: A instalacao pode ter falhado ou sido feita em outro diretorio." -ForegroundColor Red
         }
-        
-        # Limpa o arquivo MSI baixado
+
         Remove-Item -Path $destinoVnc -Force -ErrorAction SilentlyContinue
-    } 
+    }
     catch {
         Write-Host "Erro durante o processo do UltraVNC: $($_.Exception.Message)" -ForegroundColor Red
     }
