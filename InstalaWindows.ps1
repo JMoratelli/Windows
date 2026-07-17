@@ -115,29 +115,46 @@ Write-Host "--- Verificando Instalacao do UltraVNC ---" -ForegroundColor Cyan
 $pastaVnc = "C:\Program Files\uvnc bvba\UltraVNC"
 $exeVnc = Join-Path $pastaVnc "winvnc.exe"
 
+# Possiveis locais do ultravnc.ini (varia conforme a versao instalada)
+$iniProgramFiles = Join-Path $pastaVnc "ultravnc.ini"
+$iniProgramData  = "C:\ProgramData\UltraVNC\ultravnc.ini"
+$backupIni       = "$env:TEMP\ultravnc_backup.ini"
+$iniOrigemBackup = $null
+
 if (Test-Path -LiteralPath $exeVnc) {
     Write-Host "UltraVNC ja instalado nesta maquina. Pulando instalacao." -ForegroundColor Green
 }
 else {
     Write-Host "UltraVNC nao encontrado. Baixando instalador..." -ForegroundColor Yellow
-    # Use o instalador .exe (Inno Setup), nao o .msi -- e ele que aceita /COMPONENTS e /TASKS
     $urlVnc = "http://192.168.12.223/uploads/InstaladorWindows/UltraVNC_Setup.exe"
     $destinoVnc = "$env:TEMP\UltraVNC_Setup.exe"
 
     try {
         Invoke-WebRequest -Uri $urlVnc -OutFile $destinoVnc -UseBasicParsing -ErrorAction Stop
 
+        # Faz backup do ini se ja existir de alguma pre-configuracao (GPO, copia manual, etc.)
+        if (Test-Path -LiteralPath $iniProgramData) {
+            Copy-Item -LiteralPath $iniProgramData -Destination $backupIni -Force
+            $iniOrigemBackup = $iniProgramData
+            Write-Host "ultravnc.ini existente (ProgramData) salvo para restauracao." -ForegroundColor Cyan
+        }
+        elseif (Test-Path -LiteralPath $iniProgramFiles) {
+            Copy-Item -LiteralPath $iniProgramFiles -Destination $backupIni -Force
+            $iniOrigemBackup = $iniProgramFiles
+            Write-Host "ultravnc.ini existente (Program Files) salvo para restauracao." -ForegroundColor Cyan
+        }
+
         Write-Host "Instalando UltraVNC (somente Server, como servico, com driver de video)..." -ForegroundColor Cyan
-
-        # /COMPONENTS -> instala SOMENTE o Server (sem Viewer e sem Repeater)
-        # /TASKS      -> registra como servico do Windows + instala o mirror driver
-        # /VERYSILENT -> sem interface grafica, sem interacao manual
-        # /NORESTART  -> nao reinicia a maquina no final
         $argsVnc = '/TYPE=custom /COMPONENTS="ultravnc_server" /TASKS="installservice,installdriver" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS'
-
         Start-Process -FilePath $destinoVnc -ArgumentList $argsVnc -Wait -NoNewWindow
 
         Start-Sleep -Seconds 3
+
+        # Restaura o ini original por cima do que o instalador possa ter gravado
+        if ($iniOrigemBackup) {
+            Copy-Item -LiteralPath $backupIni -Destination $iniOrigemBackup -Force
+            Write-Host "ultravnc.ini original restaurado." -ForegroundColor Green
+        }
 
         if (Test-Path -LiteralPath $exeVnc) {
             Write-Host "Instalacao do UltraVNC concluida com sucesso!" -ForegroundColor Green
@@ -145,7 +162,7 @@ else {
             Write-Host "Aviso: A instalacao pode ter falhado ou sido feita em outro diretorio." -ForegroundColor Red
         }
 
-        Remove-Item -Path $destinoVnc -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $destinoVnc, $backupIni -Force -ErrorAction SilentlyContinue
     }
     catch {
         Write-Host "Erro durante o processo do UltraVNC: $($_.Exception.Message)" -ForegroundColor Red
