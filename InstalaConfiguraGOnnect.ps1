@@ -89,10 +89,10 @@ maxCalls=4
 
 [account0]
 ## Endereco do usuario (Ramal + IP do Servidor)
-userUri=sip:$Ramal@192.168.12.39
+userUri=sip:$Ramal@voip.redejcm.com.br
 
 ## IP do Servidor SIP (Registrar)
-registrarUri=sip:192.168.12.39
+registrarUri=sip:voip.redejcm.com.br
 
 ## Desativado para conexoes locais sem certificado SSL
 srtpUse=disabled
