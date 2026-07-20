@@ -114,14 +114,7 @@ catch {
 Write-Host "--- Verificando Instalacao do UltraVNC ---" -ForegroundColor Cyan
 $pastaVnc = "C:\Program Files\uvnc bvba\UltraVNC"
 $exeVnc = Join-Path $pastaVnc "winvnc.exe"
-
-# Fonte confiavel do ini: sempre o gravado pelo first logon em Program Files (nome real: UltraVNC.ini)
-$iniProgramFiles = Join-Path $pastaVnc "UltraVNC.ini"
-# Destino a corrigir: ProgramData, sempre gravado em minusculo
-$iniProgramData  = "C:\ProgramData\UltraVNC\ultravnc.ini"
-# Backup em pasta que garantidamente existe, independente do contexto de execucao
-$pastaBackup     = "C:\Users\Public\Downloads"
-$backupIni       = Join-Path $pastaBackup "ultravnc_backup.ini"
+$iniProgramData = "C:\ProgramData\UltraVNC\ultravnc.ini"
 
 if (Test-Path -LiteralPath $exeVnc) {
     Write-Host "UltraVNC ja instalado nesta maquina. Pulando instalacao." -ForegroundColor Green
@@ -134,27 +127,6 @@ else {
     try {
         Invoke-WebRequest -Uri $urlVnc -OutFile $destinoVnc -UseBasicParsing -ErrorAction Stop
 
-        # Garante que a pasta de backup existe (protecao extra, mesmo sendo pasta padrao do Windows)
-        New-Item -ItemType Directory -Path $pastaBackup -Force -ErrorAction SilentlyContinue | Out-Null
-
-        # Backup do ini confiavel (Program Files)
-        $temBackup = $false
-        if (Test-Path -LiteralPath $iniProgramFiles) {
-            try {
-                Copy-Item -LiteralPath $iniProgramFiles -Destination $backupIni -Force -ErrorAction Stop
-                if (Test-Path -LiteralPath $backupIni) {
-                    Write-Host "UltraVNC.ini (Program Files) salvo em $backupIni." -ForegroundColor Cyan
-                    $temBackup = $true
-                }
-            }
-            catch {
-                Write-Host "ERRO ao criar backup em $backupIni : $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-        else {
-            Write-Host "Aviso: UltraVNC.ini nao encontrado em Program Files - nada para salvar." -ForegroundColor Yellow
-        }
-
         Write-Host "Instalando UltraVNC (somente Server, como servico, com driver de video)..." -ForegroundColor Cyan
         $argsVnc = '/TYPE=custom /COMPONENTS="ultravnc_server" /TASKS="installservice,installdriver" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS'
         Start-Process -FilePath $destinoVnc -ArgumentList $argsVnc -Wait -NoNewWindow
@@ -166,62 +138,24 @@ else {
             $servicoVnc = Get-Service | Where-Object { $_.Name -match 'vnc' -or $_.DisplayName -match 'VNC' } | Select-Object -First 1
         }
 
-        if ($temBackup -and $servicoVnc) {
-            Write-Host "Iniciando o servico uma vez para finalizar a instalacao..." -ForegroundColor Cyan
+        if ($servicoVnc) {
+            Write-Host "Iniciando o servico uma vez para o proprio winvnc criar o ProgramData..." -ForegroundColor Cyan
             Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
 
-            Write-Host "Aguardando o servico criar o arquivo em ProgramData..." -ForegroundColor Cyan
             while (-not (Test-Path -LiteralPath $iniProgramData)) {
                 Start-Sleep -Seconds 1
             }
-            Write-Host "Arquivo em ProgramData confirmado (criado pelo servico)." -ForegroundColor Green
+            Write-Host "ProgramData criado pelo servico. Parando para corrigir..." -ForegroundColor Cyan
 
-            Write-Host "Parando o servico..." -ForegroundColor Cyan
             Stop-Service -InputObject $servicoVnc -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
+            Get-Process -Name "winvnc" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
 
-            # Confirma se o processo realmente morreu; se nao, forca
-            $procVnc = Get-Process -Name "winvnc" -ErrorAction SilentlyContinue
-            if ($procVnc) {
-                Write-Host "Processo winvnc.exe ainda ativo. Forcando encerramento..." -ForegroundColor Yellow
-                $procVnc | Stop-Process -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 2
-            }
-            $procVnc = Get-Process -Name "winvnc" -ErrorAction SilentlyContinue
-            if ($procVnc) {
-                Write-Host "Aviso: winvnc.exe ainda rodando - a gravacao abaixo pode falhar por arquivo em uso." -ForegroundColor Red
-            } else {
-                Write-Host "Processo winvnc.exe confirmado encerrado." -ForegroundColor Green
-            }
+            # Mesma variavel de conteudo ja usada pelo first logon no Program Files -- escreve direto no ProgramData
+            Set-Content -Path $iniProgramData -Value $ConteudoINI -Force
 
-            # Restaura o backup nos dois caminhos, com confirmacao explicita de cada um
-            Write-Host "Restaurando UltraVNC.ini em Program Files..." -ForegroundColor Cyan
-            try {
-                Copy-Item -LiteralPath $backupIni -Destination $iniProgramFiles -Force -ErrorAction Stop
-                if (Test-Path -LiteralPath $iniProgramFiles) {
-                    Write-Host "Confirmado: gravado em Program Files." -ForegroundColor Green
-                }
-            }
-            catch {
-                Write-Host "ERRO ao gravar em Program Files: $($_.Exception.Message)" -ForegroundColor Red
-            }
-
-            Write-Host "Restaurando ultravnc.ini em ProgramData..." -ForegroundColor Cyan
-            try {
-                Copy-Item -LiteralPath $backupIni -Destination $iniProgramData -Force -ErrorAction Stop
-                if (Test-Path -LiteralPath $iniProgramData) {
-                    Write-Host "Confirmado: gravado em ProgramData." -ForegroundColor Green
-                }
-            }
-            catch {
-                Write-Host "ERRO ao gravar em ProgramData: $($_.Exception.Message)" -ForegroundColor Red
-            }
-
-            Write-Host "Reiniciando o servico com a configuracao correta..." -ForegroundColor Cyan
             Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
-        }
-        elseif (-not $servicoVnc) {
-            Write-Host "Aviso: servico do UltraVNC nao encontrado. Restauracao nao realizada." -ForegroundColor Red
         }
 
         if (Test-Path -LiteralPath $exeVnc) {
@@ -230,7 +164,7 @@ else {
             Write-Host "Aviso: A instalacao pode ter falhado ou sido feita em outro diretorio." -ForegroundColor Red
         }
 
-        Remove-Item -Path $destinoVnc, $backupIni -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $destinoVnc -Force -ErrorAction SilentlyContinue
     }
     catch {
         Write-Host "Erro durante o processo do UltraVNC: $($_.Exception.Message)" -ForegroundColor Red
