@@ -109,23 +109,37 @@ catch {
     Write-Host "Erro durante o processo do Ninite: $($_.Exception.Message)" -ForegroundColor Red
 }
 #Fim Instala Ninite
-
 # Instala UVNC
 Write-Host "--- Verificando Instalacao do UltraVNC ---" -ForegroundColor Cyan
 $pastaVnc = "C:\Program Files\uvnc bvba\UltraVNC"
 $exeVnc = Join-Path $pastaVnc "winvnc.exe"
 $iniProgramFiles = Join-Path $pastaVnc "UltraVNC.ini"
-$iniProgramData  = "C:\ProgramData\UltraVNC\ultravnc.ini"
+$pastaProgramData = "C:\ProgramData\UltraVNC"
+$iniProgramData  = Join-Path $pastaProgramData "ultravnc.ini"
 
 if (Test-Path -LiteralPath $exeVnc) {
     Write-Host "UltraVNC ja instalado nesta maquina. Pulando instalacao." -ForegroundColor Green
 }
 else {
-    Write-Host "UltraVNC nao encontrado. Baixando instalador..." -ForegroundColor Yellow
+    Write-Host "UltraVNC nao encontrado. Preparando ambiente antes da instalacao..." -ForegroundColor Yellow
 
-    # Le o conteudo correto (gravado pelo first logon) para uma variavel em memoria, antes de qualquer coisa
-    $conteudoIni = Get-Content -LiteralPath $iniProgramFiles -Raw -ErrorAction SilentlyContinue
+    # Passo 1: garante que a pasta ProgramData\UltraVNC exista (por padrao ela nao existe)
+    if (-not (Test-Path -LiteralPath $pastaProgramData)) {
+        New-Item -ItemType Directory -Path $pastaProgramData -Force | Out-Null
+        Write-Host "Pasta criada: $pastaProgramData" -ForegroundColor Cyan
+    }
 
+    # Passo 2: le o ini de Program Files (gravado pelo first logon) e grava em ProgramData, com o nome padrao em minusculo
+    if (Test-Path -LiteralPath $iniProgramFiles) {
+        $conteudoIni = Get-Content -LiteralPath $iniProgramFiles -Raw
+        Set-Content -Path $iniProgramData -Value $conteudoIni -Force
+        Write-Host "ultravnc.ini gravado em ProgramData a partir do conteudo de Program Files." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Aviso: UltraVNC.ini nao encontrado em Program Files - ProgramData ficara sem config previa." -ForegroundColor Red
+    }
+
+    Write-Host "Baixando instalador..." -ForegroundColor Yellow
     $urlVnc = "http://192.168.12.223/uploads/InstaladorWindows/UltraVNC_Setup.exe"
     $destinoVnc = "$env:TEMP\UltraVNC_Setup.exe"
 
@@ -133,35 +147,8 @@ else {
         Invoke-WebRequest -Uri $urlVnc -OutFile $destinoVnc -UseBasicParsing -ErrorAction Stop
 
         Write-Host "Instalando UltraVNC (somente Server, como servico, com driver de video)..." -ForegroundColor Cyan
-        $argsVnc = '/TYPE=custom /COMPONENTS="ultravnc_server" /TASKS="installservice,installdriver" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS'
+        $argsVnc = '/TYPE=custom /COMPONENTS="ultravnc_server" /TASKS="installservice,startservice,installdriver" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS'
         Start-Process -FilePath $destinoVnc -ArgumentList $argsVnc -Wait -NoNewWindow
-
-        Start-Sleep -Seconds 3
-
-        $servicoVnc = Get-Service -Name "uvnc_service" -ErrorAction SilentlyContinue
-        if (-not $servicoVnc) {
-            $servicoVnc = Get-Service | Where-Object { $_.Name -match 'vnc' -or $_.DisplayName -match 'VNC' } | Select-Object -First 1
-        }
-
-        if ($conteudoIni -and $servicoVnc) {
-            Write-Host "Iniciando o servico uma vez para o proprio winvnc criar o ProgramData..." -ForegroundColor Cyan
-            Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
-
-            while (-not (Test-Path -LiteralPath $iniProgramData)) {
-                Start-Sleep -Seconds 1
-            }
-            Write-Host "ProgramData criado pelo servico. Parando para corrigir..." -ForegroundColor Cyan
-
-            Stop-Service -InputObject $servicoVnc -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-            Get-Process -Name "winvnc" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-
-            # Grava o conteudo lido do Program Files direto no ProgramData
-            Set-Content -Path $iniProgramData -Value $conteudoIni -Force
-
-            Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
-        }
 
         if (Test-Path -LiteralPath $exeVnc) {
             Write-Host "Instalacao do UltraVNC concluida com sucesso!" -ForegroundColor Green
