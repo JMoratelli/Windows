@@ -114,13 +114,18 @@ catch {
 Write-Host "--- Verificando Instalacao do UltraVNC ---" -ForegroundColor Cyan
 $pastaVnc = "C:\Program Files\uvnc bvba\UltraVNC"
 $exeVnc = Join-Path $pastaVnc "winvnc.exe"
-$iniProgramData = "C:\ProgramData\UltraVNC\ultravnc.ini"
+$iniProgramFiles = Join-Path $pastaVnc "UltraVNC.ini"
+$iniProgramData  = "C:\ProgramData\UltraVNC\ultravnc.ini"
 
 if (Test-Path -LiteralPath $exeVnc) {
     Write-Host "UltraVNC ja instalado nesta maquina. Pulando instalacao." -ForegroundColor Green
 }
 else {
     Write-Host "UltraVNC nao encontrado. Baixando instalador..." -ForegroundColor Yellow
+
+    # Le o conteudo correto (gravado pelo first logon) para uma variavel em memoria, antes de qualquer coisa
+    $conteudoIni = Get-Content -LiteralPath $iniProgramFiles -Raw -ErrorAction SilentlyContinue
+
     $urlVnc = "http://192.168.12.223/uploads/InstaladorWindows/UltraVNC_Setup.exe"
     $destinoVnc = "$env:TEMP\UltraVNC_Setup.exe"
 
@@ -138,7 +143,7 @@ else {
             $servicoVnc = Get-Service | Where-Object { $_.Name -match 'vnc' -or $_.DisplayName -match 'VNC' } | Select-Object -First 1
         }
 
-        if ($servicoVnc) {
+        if ($conteudoIni -and $servicoVnc) {
             Write-Host "Iniciando o servico uma vez para o proprio winvnc criar o ProgramData..." -ForegroundColor Cyan
             Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
 
@@ -152,8 +157,8 @@ else {
             Get-Process -Name "winvnc" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            # Mesma variavel de conteudo ja usada pelo first logon no Program Files -- escreve direto no ProgramData
-            Set-Content -Path $iniProgramData -Value $ConteudoINI -Force
+            # Grava o conteudo lido do Program Files direto no ProgramData
+            Set-Content -Path $iniProgramData -Value $conteudoIni -Force
 
             Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
         }
