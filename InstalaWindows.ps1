@@ -115,9 +115,28 @@ Write-Host "--- Verificando Instalacao do UltraVNC ---" -ForegroundColor Cyan
 $pastaVnc = "C:\Program Files\uvnc bvba\UltraVNC"
 $exeVnc = Join-Path $pastaVnc "winvnc.exe"
 
-$iniProgramFiles = Join-Path $pastaVnc "ultravnc.ini"
+# Fonte confiavel do ini: sempre o gravado pelo first logon em Program Files (nome real: UltraVNC.ini)
+$iniProgramFiles = Join-Path $pastaVnc "UltraVNC.ini"
+# Destino a corrigir: ProgramData, sempre gravado em minusculo
 $iniProgramData  = "C:\ProgramData\UltraVNC\ultravnc.ini"
 $backupIni       = "$env:TEMP\ultravnc_backup.ini"
+
+function Copy-IniForcado {
+    param($Origem, $Destino)
+    $tentativa = 0
+    do {
+        try {
+            Copy-Item -LiteralPath $Origem -Destination $Destino -Force
+            return $true
+        }
+        catch {
+            $tentativa++
+            Write-Host "Falha ao gravar em $Destino (tentativa $tentativa): $($_.Exception.Message)" -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+        }
+    } while ($tentativa -lt 5)
+    return $false
+}
 
 if (Test-Path -LiteralPath $exeVnc) {
     Write-Host "UltraVNC ja instalado nesta maquina. Pulando instalacao." -ForegroundColor Green
@@ -130,14 +149,10 @@ else {
     try {
         Invoke-WebRequest -Uri $urlVnc -OutFile $destinoVnc -UseBasicParsing -ErrorAction Stop
 
-        # Faz backup do ini gravado pelo first logon (qualquer um dos dois caminhos que existir)
-        if (Test-Path -LiteralPath $iniProgramData) {
-            Copy-Item -LiteralPath $iniProgramData -Destination $backupIni -Force
-            Write-Host "ultravnc.ini existente (ProgramData) salvo para restauracao." -ForegroundColor Cyan
-        }
-        elseif (Test-Path -LiteralPath $iniProgramFiles) {
+        # Backup somente da fonte confiavel (Program Files)
+        if (Test-Path -LiteralPath $iniProgramFiles) {
             Copy-Item -LiteralPath $iniProgramFiles -Destination $backupIni -Force
-            Write-Host "ultravnc.ini existente (Program Files) salvo para restauracao." -ForegroundColor Cyan
+            Write-Host "UltraVNC.ini (Program Files) salvo para restauracao." -ForegroundColor Cyan
         }
         $temBackup = Test-Path -LiteralPath $backupIni
 
@@ -155,26 +170,47 @@ else {
         if ($temBackup -and $servicoVnc) {
             Write-Host "Iniciando o servico uma vez para finalizar a instalacao..." -ForegroundColor Cyan
             Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
 
-            Write-Host "Parando o servico para substituir o ultravnc.ini..." -ForegroundColor Cyan
+            # Aguarda indefinidamente ate o proprio servico criar o ultravnc.ini em ProgramData
+            Write-Host "Aguardando o servico criar o arquivo em ProgramData..." -ForegroundColor Cyan
+            while (-not (Test-Path -LiteralPath $iniProgramData)) {
+                Start-Sleep -Seconds 1
+            }
+            Write-Host "Arquivo em ProgramData confirmado (criado pelo servico)." -ForegroundColor Cyan
+
+            Write-Host "Parando o servico..." -ForegroundColor Cyan
             Stop-Service -InputObject $servicoVnc -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            # Grava o arquivo correto NOS DOIS caminhos, sem depender de qual o servico realmente le
+            # Stop-Service nem sempre mata o processo -- garante na marra
+            Write-Host "Garantindo que o processo winvnc.exe foi encerrado..." -ForegroundColor Cyan
+            Get-Process -Name "winvnc" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+
+            # Garante o diretorio do ProgramData (caso precise)
             New-Item -ItemType Directory -Path (Split-Path $iniProgramData) -Force -ErrorAction SilentlyContinue | Out-Null
-            Copy-Item -LiteralPath $backupIni -Destination $iniProgramData -Force
-            Copy-Item -LiteralPath $backupIni -Destination $iniProgramFiles -Force
-            Write-Host "ultravnc.ini restaurado em ProgramData e em Program Files." -ForegroundColor Green
+
+            # Sobrescreve o backup NOS DOIS caminhos, sem checar data, so garantindo que grave
+            $okProgramFiles = Copy-IniForcado -Origem $backupIni -Destino $iniProgramFiles
+            $okProgramData  = Copy-IniForcado -Origem $backupIni -Destino $iniProgramData
+
+            if ($okProgramFiles) {
+                Write-Host "UltraVNC.ini restaurado em Program Files." -ForegroundColor Green
+            } else {
+                Write-Host "Aviso: falha ao restaurar em Program Files apos varias tentativas." -ForegroundColor Red
+            }
+
+            if ($okProgramData) {
+                Write-Host "ultravnc.ini restaurado em ProgramData." -ForegroundColor Green
+            } else {
+                Write-Host "Aviso: falha ao restaurar em ProgramData apos varias tentativas." -ForegroundColor Red
+            }
 
             Write-Host "Reiniciando o servico com a configuracao correta..." -ForegroundColor Cyan
             Start-Service -InputObject $servicoVnc -ErrorAction SilentlyContinue
         }
         elseif ($temBackup) {
-            New-Item -ItemType Directory -Path (Split-Path $iniProgramData) -Force -ErrorAction SilentlyContinue | Out-Null
-            Copy-Item -LiteralPath $backupIni -Destination $iniProgramData -Force
-            Copy-Item -LiteralPath $backupIni -Destination $iniProgramFiles -Force
-            Write-Host "ultravnc.ini restaurado nos dois caminhos (servico nao encontrado para reinicio)." -ForegroundColor Yellow
+            Write-Host "Aviso: servico do UltraVNC nao encontrado. Nao foi possivel confirmar/restaurar os arquivos." -ForegroundColor Red
         }
 
         if (Test-Path -LiteralPath $exeVnc) {
