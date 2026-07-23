@@ -274,6 +274,8 @@ if ($resposta -match "^[Ss]") {
         Show-ConfiguracaoRamal
 
         # INICIA O PROGRAMA POR ULTIMO DE TUDO APOS A INSTALACAO E CONFIGURACAO
+        icacls "$env:LOCALAPPDATA\gonnect\GOnnect\gonnect\01-sip.conf" /grant "Todos:(F)"
+        icacls "$env:LOCALAPPDATA\gonnect\GOnnect\gonnect\99-user.conf" /grant "Todos:(F)"
         Write-Host "Iniciando o GOnnect..." -ForegroundColor Green
         Start-Process -FilePath $caminhoExeGonnect -WorkingDirectory $pastaTrabalho -NoNewWindow
 
