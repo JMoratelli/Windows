@@ -94,6 +94,73 @@ function SoftcamRegistrada {
     return $false
 }
 
+# Cria a Tarefa Agendada como um "watchdog":
+#  - dispara no logon de qualquer usuario do grupo "Usuarios"
+#    (roda como o proprio usuario, sem elevacao = integridade certa p/ camera);
+#  - repete a cada 1 min, sem duplicar (se ja estiver rodando, ignora;
+#    se tiver caido, sobe de novo);
+#  - reinicia em caso de falha; roda oculto e sem limite de tempo.
+function CriarTarefaWatchdog {
+    $exe = Join-Path $Dest 'rtsp2cam.exe'
+    $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>RTSP2Cam - mantem a webcam virtual rodando (watchdog).</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <GroupId>S-1-5-32-545</GroupId>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>$exe</Command>
+      <Arguments>--worker</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+    $xmlPath = Join-Path $env:TEMP 'rtsp2cam_task.xml'
+    [IO.File]::WriteAllText($xmlPath, $xml, [Text.Encoding]::Unicode) # UTF-16 p/ o schtasks
+    & schtasks /Create /TN $TaskName /XML $xmlPath /F | Out-Null
+    $ok = ($LASTEXITCODE -eq 0)
+    Remove-Item $xmlPath -Force -ErrorAction SilentlyContinue
+    if (-not $ok) { throw "Falha ao criar a Tarefa Agendada (codigo $LASTEXITCODE)." }
+}
+
 try {
     Write-Host "============================================"
     Write-Host "  Instalando RTSP -> Webcam virtual"
@@ -112,16 +179,23 @@ try {
     Extrair7z $pkg $Dest
     Remove-Item $pkg -Force -ErrorAction SilentlyContinue
 
-    Write-Host "[3/7] Baixando o ffmpeg..."
-    $ffzip = Join-Path $env:TEMP 'ffmpeg.zip'
-    Baixar $FfmpegUrl $ffzip
-    $fftmp = Join-Path $env:TEMP ('ff_' + [guid]::NewGuid().ToString('N'))
-    Expand-Archive -Path $ffzip -DestinationPath $fftmp -Force
-    $ff = Get-ChildItem -Path $fftmp -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1
-    if (-not $ff) { throw "ffmpeg.exe nao encontrado no pacote baixado." }
-    Copy-Item $ff.FullName (Join-Path $Dest 'ffmpeg.exe') -Force
-    Remove-Item $ffzip -Force -ErrorAction SilentlyContinue
-    Remove-Item $fftmp -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "[3/7] ffmpeg..."
+    $ffDest = Join-Path $Dest 'ffmpeg.exe'
+    if (Test-Path $ffDest) {
+        Write-Host "      ja existe na pasta, pulando o download."
+    }
+    else {
+        Write-Host "      baixando..."
+        $ffzip = Join-Path $env:TEMP 'ffmpeg.zip'
+        Baixar $FfmpegUrl $ffzip
+        $fftmp = Join-Path $env:TEMP ('ff_' + [guid]::NewGuid().ToString('N'))
+        Expand-Archive -Path $ffzip -DestinationPath $fftmp -Force
+        $ff = Get-ChildItem -Path $fftmp -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1
+        if (-not $ff) { throw "ffmpeg.exe nao encontrado no pacote baixado." }
+        Copy-Item $ff.FullName $ffDest -Force
+        Remove-Item $ffzip -Force -ErrorAction SilentlyContinue
+        Remove-Item $fftmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Host "`n[4/7] Dados da camera (para o rtsp2cam.conf):"
     $ip    = Read-Host "      IP da camera (ex: 192.168.1.10)"
@@ -162,8 +236,8 @@ FPS=25
     }
     Write-Host "      registrada e verificada (DirectShow Softcam)."
 
-    Write-Host "[7/7] Criando inicio automatico e iniciando..."
-    & (Join-Path $Dest 'rtsp2cam.exe') --install-task | Out-Null
+    Write-Host "[7/7] Criando inicio automatico (watchdog) e iniciando..."
+    CriarTarefaWatchdog
     # Inicia agora pela tarefa (roda como usuario normal, sem elevacao,
     # que e o correto para a camera aparecer nos apps).
     & schtasks /run /tn $TaskName 2>$null | Out-Null
