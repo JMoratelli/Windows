@@ -24,6 +24,8 @@ $TaskName   = 'rtsp2cam'
 $PkgUrl     = 'https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/Softwares/RTSP2CAM.7z'
 $FfmpegUrl  = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
 $SevenZrUrl = 'https://www.7-zip.org/a/7zr.exe'
+# CLSID do filtro DirectShow da softcam (usado para checar o registro).
+$SoftcamClsid = '{AEF3B972-5FA5-4647-9571-358EB472BC9E}'
 
 # ---- Auto-elevar para Administrador ----
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -58,6 +60,40 @@ function Extrair7z($arquivo, $destino) {
     }
 }
 
+# Garante o runtime do Visual C++ (a softcam.dll depende de VCRUNTIME140 /
+# MSVCP140 / UCRT). Se ja estiver presente, nao faz nada.
+function GarantirVCRuntime {
+    $sys = Join-Path $env:SystemRoot 'System32'
+    if ((Test-Path (Join-Path $sys 'vcruntime140.dll')) -and
+        (Test-Path (Join-Path $sys 'vcruntime140_1.dll')) -and
+        (Test-Path (Join-Path $sys 'msvcp140.dll'))) {
+        Write-Host "      runtime do Visual C++ ja presente."
+        return
+    }
+    Write-Host "      instalando o runtime do Visual C++ (necessario para a softcam)..."
+    $vc = Join-Path $env:TEMP 'vc_redist.x64.exe'
+    Baixar 'https://aka.ms/vs/17/release/vc_redist.x64.exe' $vc
+    $p = Start-Process -FilePath $vc -ArgumentList '/install', '/quiet', '/norestart' -Wait -PassThru
+    Remove-Item $vc -Force -ErrorAction SilentlyContinue
+    # 0 = ok, 3010 = ok (pede reinicio), 1638 = ja ha versao igual/mais nova.
+    if ($p.ExitCode -notin 0, 1638, 3010) {
+        throw "Falha ao instalar o Visual C++ Redistributable (codigo $($p.ExitCode))."
+    }
+}
+
+# Confere no registro se o filtro DirectShow da softcam foi de fato
+# registrado (a chave InprocServer32 do CLSID passa a existir).
+function SoftcamRegistrada {
+    $chaves = @(
+        "HKLM:\SOFTWARE\Classes\CLSID\$SoftcamClsid\InprocServer32",
+        "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$SoftcamClsid\InprocServer32"
+    )
+    foreach ($c in $chaves) {
+        if (Test-Path $c) { return $true }
+    }
+    return $false
+}
+
 try {
     Write-Host "============================================"
     Write-Host "  Instalando RTSP -> Webcam virtual"
@@ -66,17 +102,17 @@ try {
     # Fecha instancia anterior, se estiver rodando.
     Get-Process rtsp2cam -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
-    Write-Host "[1/6] Preparando pasta: $Dest"
+    Write-Host "[1/7] Preparando pasta: $Dest"
     New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 
-    Write-Host "[2/6] Baixando o pacote do programa..."
+    Write-Host "[2/7] Baixando o pacote do programa..."
     $pkg = Join-Path $env:TEMP 'RTSP2CAM.7z'
     Baixar $PkgUrl $pkg
     Write-Host "      extraindo..."
     Extrair7z $pkg $Dest
     Remove-Item $pkg -Force -ErrorAction SilentlyContinue
 
-    Write-Host "[3/6] Baixando o ffmpeg..."
+    Write-Host "[3/7] Baixando o ffmpeg..."
     $ffzip = Join-Path $env:TEMP 'ffmpeg.zip'
     Baixar $FfmpegUrl $ffzip
     $fftmp = Join-Path $env:TEMP ('ff_' + [guid]::NewGuid().ToString('N'))
@@ -87,7 +123,7 @@ try {
     Remove-Item $ffzip -Force -ErrorAction SilentlyContinue
     Remove-Item $fftmp -Recurse -Force -ErrorAction SilentlyContinue
 
-    Write-Host "`n[4/6] Dados da camera (para o rtsp2cam.conf):"
+    Write-Host "`n[4/7] Dados da camera (para o rtsp2cam.conf):"
     $ip    = Read-Host "      IP da camera (ex: 192.168.1.10)"
     $login = Read-Host "      Usuario"
     $sec   = Read-Host "      Senha" -AsSecureString
@@ -114,11 +150,19 @@ FPS=25
         $conf,
         (New-Object System.Text.UTF8Encoding($false)))  # UTF-8 sem BOM
 
-    Write-Host "`n[5/6] Registrando a webcam virtual (softcam)..."
-    & regsvr32 /s (Join-Path $Dest 'softcam.dll')
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao registrar a softcam.dll." }
+    Write-Host "`n[5/7] Verificando o runtime do Visual C++..."
+    GarantirVCRuntime
 
-    Write-Host "[6/6] Criando inicio automatico e iniciando..."
+    Write-Host "`n[6/7] Registrando a webcam virtual (softcam)..."
+    & regsvr32 /s (Join-Path $Dest 'softcam.dll')
+    Start-Sleep -Milliseconds 500
+    if (-not (SoftcamRegistrada)) {
+        throw ("A softcam NAO ficou registrada. Confira se o runtime do Visual C++ " +
+               "foi instalado e se voce esta rodando como administrador.")
+    }
+    Write-Host "      registrada e verificada (DirectShow Softcam)."
+
+    Write-Host "[7/7] Criando inicio automatico e iniciando..."
     & (Join-Path $Dest 'rtsp2cam.exe') --install-task | Out-Null
     # Inicia agora pela tarefa (roda como usuario normal, sem elevacao,
     # que e o correto para a camera aparecer nos apps).
