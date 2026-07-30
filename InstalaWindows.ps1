@@ -145,20 +145,13 @@ $DotNetPkgs = @('Microsoft.DotNet.DesktopRuntime.6','Microsoft.DotNet.DesktopRun
           <Border Style="{StaticResource Card}">
             <StackPanel>
               <Grid Margin="0,0,0,4">
-                <TextBlock Text="Base do sistema" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                <Border Background="#EAF1FB" CornerRadius="4" Padding="7,2" HorizontalAlignment="Right">
-                  <TextBlock Text="sempre instalado" FontSize="11" Foreground="#1A5FB4"/>
+                <TextBlock Text="Opcionais" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <Border Background="#FDF0E3" CornerRadius="4" Padding="7,2" HorizontalAlignment="Right">
+                  <TextBlock Text="escolha do tecnico" FontSize="11" Foreground="#A8480A"/>
                 </Border>
               </Grid>
-              <TextBlock Text="Instalado em escopo de maquina, disponivel para qualquer usuario do dominio."
+              <TextBlock Text="Marque o que esta estacao precisa antes de comecar."
                          Foreground="#6B7580" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10"/>
-              <StackPanel x:Name="BasePanel"/>
-            </StackPanel>
-          </Border>
-
-          <Border Style="{StaticResource Card}" Margin="0,14,0,0">
-            <StackPanel>
-              <TextBlock Text="Opcionais" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10"/>
               <StackPanel x:Name="OptPanel"/>
             </StackPanel>
           </Border>
@@ -173,6 +166,20 @@ $DotNetPkgs = @('Microsoft.DotNet.DesktopRuntime.6','Microsoft.DotNet.DesktopRun
               <TextBlock Text="O modelo e o driver sao detectados por SNMP." Foreground="#6B7580"
                          FontSize="12" Margin="0,0,0,10"/>
               <StackPanel x:Name="PrintersPanel"/>
+            </StackPanel>
+          </Border>
+
+          <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+            <StackPanel>
+              <Grid Margin="0,0,0,4">
+                <TextBlock Text="Base do sistema" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <Border Background="#EAF1FB" CornerRadius="4" Padding="7,2" HorizontalAlignment="Right">
+                  <TextBlock Text="sempre instalado" FontSize="11" Foreground="#1A5FB4"/>
+                </Border>
+              </Grid>
+              <TextBlock Text="Instalado em escopo de maquina, disponivel para qualquer usuario do dominio."
+                         Foreground="#6B7580" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10"/>
+              <StackPanel x:Name="BasePanel"/>
             </StackPanel>
           </Border>
 
@@ -316,7 +323,13 @@ foreach ($t in $Opcional) {
 }
 
 $togglePrinters = {
-    $PrintersCard.Visibility = if ($Checks['impressoras'].IsChecked) { "Visible" } else { "Collapsed" }
+    if ($Checks['impressoras'].IsChecked) {
+        $PrintersCard.Visibility = "Visible"
+        # ja abre com uma linha pronta, sem obrigar um clique extra no "+"
+        if ($PrinterRows.Count -eq 0) { Add-PrinterRow }
+    } else {
+        $PrintersCard.Visibility = "Collapsed"
+    }
 }
 $Checks['impressoras'].Add_Checked($togglePrinters)
 $Checks['impressoras'].Add_Unchecked($togglePrinters)
@@ -704,20 +717,46 @@ $worker = {
 
                 'impressoras' {
                     $TempDir = "C:\KyoceraDrivers"
-                    $Zip     = "$TempDir\drivers.7z"
                     if (!(Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
-                    if (-not (Test-Path $Zip)) {
-                        W "   baixando o pacote de drivers..."
-                        Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.7z" -OutFile $Zip -ErrorAction Stop
-                    }
+
                     $Infs = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse -ErrorAction SilentlyContinue
+
                     if (-not $Infs) {
-                        W "   extraindo..."
-                        $sevenZip = "C:\Program Files\7-Zip\7z.exe"
-                        if (Test-Path $sevenZip) { & $sevenZip x $Zip "-o$TempDir" -y | Out-Null }
-                        else { 7z x $Zip "-o$TempDir" -y | Out-Null }
+                        # Preferimos .zip: o Expand-Archive e nativo e nao depende do 7-Zip
+                        $zip  = "$TempDir\drivers.zip"
+                        $sete = "$TempDir\drivers.7z"
+                        $usouZip = $false
+
+                        if (-not (Test-Path $zip) -and -not (Test-Path $sete)) {
+                            try {
+                                W "   baixando KyoceraDrivers.zip..."
+                                Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.zip" -OutFile $zip -ErrorAction Stop
+                                $usouZip = $true
+                            }
+                            catch {
+                                W "   zip nao encontrado no servidor, tentando o 7z..." "#93A5B8"
+                                Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.7z" -OutFile $sete -ErrorAction Stop
+                            }
+                        }
+
+                        if (Test-Path $zip) { $usouZip = $true }
+
+                        if ($usouZip) {
+                            W "   extraindo com Expand-Archive..."
+                            Expand-Archive -LiteralPath $zip -DestinationPath $TempDir -Force -ErrorAction Stop
+                        }
+                        else {
+                            W "   extraindo com 7-Zip..."
+                            $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+                            if (-not (Test-Path $sevenZip)) {
+                                throw "pacote em .7z e o 7-Zip nao esta instalado nesta maquina"
+                            }
+                            & $sevenZip x $sete "-o$TempDir" -y | Out-Null
+                        }
+
                         $Infs = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse
                     }
+
                     if (-not $Infs) { throw "nenhum OEMSETUP.INF apos a extracao" }
 
                     foreach ($p in $sync.Printers) {
@@ -764,6 +803,7 @@ $worker = {
                             }
 
                             pnputil.exe /add-driver $InfPath | Out-Null
+
                             $printUiArgs = "printui.dll,PrintUIEntry /ia /m `"$DriverName`" /f `"$InfPath`""
                             $proc = Start-Process rundll32.exe -ArgumentList $printUiArgs -Wait -PassThru -WindowStyle Hidden
                             if ($proc.ExitCode -ne 0) { throw "PrintUI retornou $($proc.ExitCode)" }
@@ -790,6 +830,7 @@ $worker = {
                                 $ticket.DocumentElement.AppendChild($fr) | Out-Null
                             }
                             Set-PrintConfiguration -PrinterName $p.Nome -PrintTicketXML $ticket.OuterXml -ErrorAction Stop
+
                             Ok "$($p.Nome) configurada"
                         }
                         catch { Err "[$($p.Ip)] $($_.Exception.Message)" }
