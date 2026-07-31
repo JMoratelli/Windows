@@ -10,7 +10,7 @@ $VentoyExtractRoot = Join-Path $DownloadsFolder "VentoyExtracted"
 $IsosCatalogo = @(
     [PSCustomObject]@{
         Rotulo = "Windows 11 25H2 - Machadao Corp V5"
-        Padrao = "Win11_25H2_JJ-MachadaoCorpV5.iso"
+        Padrao = "Win11_25H2_JJ-MachadaoCorpV6.iso"
     },
     [PSCustomObject]@{
         Rotulo = "Instalador PDV - Ubuntu 22.04 (1.14)"
