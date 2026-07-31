@@ -4,6 +4,22 @@
     Interface WPF autocontida. Desenvolvido por @JJMoratelli
 #>
 
+# ---------------------------------------------------------------- CONSOLE OCULTO
+# Esconde a janela preta do PowerShell: se o tecnico fechar ela, derruba a
+# instalacao no meio. Fica so a interface.
+Add-Type -Namespace Nativo -Name Janela -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+[DllImport("user32.dll")]   public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+'@ -ErrorAction SilentlyContinue
+
+try {
+    $hConsole = [Nativo.Janela]::GetConsoleWindow()
+    if ($hConsole -ne [System.IntPtr]::Zero) {
+        [Nativo.Janela]::ShowWindow($hConsole, 0) | Out-Null   # 0 = SW_HIDE
+    }
+}
+catch { }   # no ISE nao existe console, e tudo bem
+
 # ---------------------------------------------------------------- ELEVACAO
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
@@ -12,7 +28,8 @@ $princ = New-Object Security.Principal.WindowsPrincipal($ident)
 if (-not $princ.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     if ($PSCommandPath) {
         Start-Process -FilePath "powershell.exe" -Verb RunAs `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+            -WindowStyle Hidden `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`""
         return
     } else {
         [System.Windows.Forms.MessageBox]::Show(
@@ -36,11 +53,11 @@ $Base = @(
     @{ Id='notepadpp';   Nome='Notepad++';                        Info='Notepad++.Notepad++' }
     @{ Id='sumatra';     Nome='Sumatra PDF';                      Info='SumatraPDF.SumatraPDF' }
     @{ Id='lightshot';   Nome='Lightshot';                        Info='Skillbrains.Lightshot' }
+    @{ Id='vlc';         Nome='VLC media player';                 Info='VideoLAN.VLC' }
     @{ Id='uvnc';        Nome='UltraVNC (server)';                Info='Servico uvnc_service + driver de video' }
 )
 
 $Opcional = @(
-    @{ Id='vlc';         Nome='VLC media player';    Info='VideoLAN.VLC';                          Padrao=$false }
     @{ Id='gonnect';     Nome='GOnnect (SIP)';       Info='Ramal e configurado no proximo login';  Padrao=$true  }
     @{ Id='impressoras'; Nome='Impressoras Kyocera'; Info='Detecta o modelo por SNMP';             Padrao=$false }
 )
@@ -201,7 +218,30 @@ $DotNetPkgs = @('Microsoft.DotNet.DesktopRuntime.6','Microsoft.DotNet.DesktopRun
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,20,0">
-          <TextBlock x:Name="LblStatus" Text="Pronto." FontSize="13" Foreground="#3A4450" Margin="0,0,0,6"/>
+          <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+            <Grid x:Name="Spinner" Width="16" Height="16" Margin="0,0,9,0"
+                  Visibility="Collapsed" RenderTransformOrigin="0.5,0.5">
+              <Grid.RenderTransform>
+                <RotateTransform Angle="0"/>
+              </Grid.RenderTransform>
+              <Ellipse Width="16" Height="16" Stroke="#DCE1E7" StrokeThickness="2.5"/>
+              <Ellipse Width="16" Height="16" Stroke="#1A5FB4" StrokeThickness="2.5"
+                       StrokeDashArray="11 40" StrokeDashCap="Round"/>
+              <Grid.Triggers>
+                <EventTrigger RoutedEvent="Grid.Loaded">
+                  <BeginStoryboard>
+                    <Storyboard RepeatBehavior="Forever">
+                      <DoubleAnimation
+                          Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                          From="0" To="360" Duration="0:0:0.9"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </EventTrigger>
+              </Grid.Triggers>
+            </Grid>
+            <TextBlock x:Name="LblStatus" Text="Pronto." FontSize="13" Foreground="#3A4450"
+                       VerticalAlignment="Center"/>
+          </StackPanel>
           <ProgressBar x:Name="Bar" Height="6" Minimum="0" Maximum="100" Value="0"
                        Foreground="#1A5FB4" Background="#E4E8EC" BorderThickness="0"/>
         </StackPanel>
@@ -252,6 +292,7 @@ $BtnRun        = $win.FindName("BtnRun")
 $LogBox        = $win.FindName("LogBox")
 $Bar           = $win.FindName("Bar")
 $LblStatus     = $win.FindName("LblStatus")
+$Spinner       = $win.FindName("Spinner")
 $DoneOverlay   = $win.FindName("DoneOverlay")
 $DoneTitle     = $win.FindName("DoneTitle")
 $DoneMsg       = $win.FindName("DoneMsg")
@@ -459,7 +500,7 @@ if (Test-Nome "*ONLYOFFICE*")   { Mark-Ok 'onlyoffice' }
 if (Test-Nome "*Lightshot*")    { Mark-Ok 'lightshot' }
 if (Test-Nome "Notepad++*")     { Mark-Ok 'notepadpp' }
 if (Test-Nome "*Sumatra*")      { Mark-Ok 'sumatra' }
-if (Test-Nome "VLC media player*") { Mark-Ok 'vlc'; $Checks['vlc'].IsChecked = $false }
+if (Test-Nome "VLC media player*") { Mark-Ok 'vlc' }
 
 $qtdVc = @($Instalados | Where-Object { $_ -like "Microsoft Visual C++*Redistributable*" }).Count
 if ($qtdVc -ge 12) { Mark-Ok 'vcredist' } elseif ($qtdVc -gt 0) { Set-Status 'vcredist' "$qtdVc de 12" "#8A5A00" }
@@ -883,6 +924,7 @@ $BtnRun.Add_Click({
     $BtnRun.IsEnabled = $false
     $BtnRun.Content = "Preparando..."
     $Bar.Value = 0
+    $Spinner.Visibility = "Visible"
     $timerPoll.Start()
 
     $rs = [runspacefactory]::CreateRunspace()
@@ -930,6 +972,7 @@ $timerPoll.Add_Tick({
     if ($sync.Done -and -not $script:Finalizando) {
         $script:Finalizando = $true
         $timerPoll.Stop()
+        $Spinner.Visibility = "Collapsed"
         if ($sync.Falhas -gt 0) {
             $DoneTitle.Text = "Preparacao concluida com avisos"
             $DoneMsg.Text = "$($sync.Falhas) item(ns) nao foram instalados. Confira o log antes de entregar a maquina."
