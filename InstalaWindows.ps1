@@ -732,14 +732,33 @@ $worker = {
                 }
 
                 'gonnect' {
-                    W "   consultando a ultima versao no GitHub..."
-                    $api = Invoke-RestMethod -Uri "https://api.github.com/repos/gonicus/gonnect/releases/latest" `
-                           -UseBasicParsing -ErrorAction Stop
-                    $asset = $api.assets | Where-Object { $_.name -like "*win64.exe" } | Select-Object -First 1
-                    if (-not $asset) { throw "win64.exe nao localizado no release" }
+                    # A release mais recente nem sempre traz instalador Windows,
+                    # entao varremos o historico ate achar um asset win64.
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    $cabecalhos = @{ 'User-Agent' = 'Machadao-Instalador' }
+
+                    W "   procurando a ultima versao com instalador win64..."
+                    $releases = Invoke-RestMethod -UseBasicParsing -ErrorAction Stop -Headers $cabecalhos `
+                        -Uri "https://api.github.com/repos/gonicus/gonnect/releases?per_page=100"
+
+                    $asset = $null
+                    $tag = $null
+                    foreach ($rel in $releases) {
+                        $achado = $rel.assets |
+                                  Where-Object { $_.name -like "*win64*.exe" } |
+                                  Select-Object -First 1
+                        if ($achado) { $asset = $achado; $tag = $rel.tag_name; break }
+                    }
+
+                    if (-not $asset) {
+                        throw "nenhuma das $($releases.Count) releases tem instalador win64"
+                    }
+
+                    W "   versao encontrada: $tag"
                     $destino = "$env:TEMP\$($asset.name)"
                     W "   baixando $($asset.name)..."
-                    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $destino -UseBasicParsing -ErrorAction Stop
+                    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $destino `
+                        -UseBasicParsing -Headers $cabecalhos -ErrorAction Stop
                     W "   instalando para todos os usuarios..."
                     Start-Process -FilePath $destino -ArgumentList "/S" -Wait -WindowStyle Hidden
 
