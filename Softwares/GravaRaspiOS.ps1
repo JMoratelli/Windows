@@ -48,7 +48,6 @@ $originPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyComm
 if ($originPath -and (Test-Path $originPath) -and ($originPath -ne $targetScript)) {
     Copy-Item -Path $originPath -Destination $targetScript -Force
 } elseif (-not (Test-Path $targetScript)) {
-    # Se executado via bloco/remoto sem arquivo de origem, grava o conteúdo diretamente
     Set-Content -Path $targetScript -Value $MyInvocation.MyCommand.Definition -Force
 }
 
@@ -96,8 +95,8 @@ $Verde   = [System.Drawing.ColorTranslator]::FromHtml("#0A6F66")
 $Vinho   = [System.Drawing.ColorTranslator]::FromHtml("#C01C28")
 $Ambar   = [System.Drawing.ColorTranslator]::FromHtml("#8A5A00")
 
-$script:Operando   = $false
-$script:DiscosList = @{}
+$script:Operando    = $false
+$script:DiscosList  = @{}
 $script:MotivosList = @{}
 
 $LARG = 780
@@ -210,11 +209,11 @@ $pnlSelecao.Controls.Add($cmbDisco)
 
 # Opção de Desbloqueio
 $chkFixo           = New-Object System.Windows.Forms.CheckBox
-$chkFixo.Text      = "Permitir disco fixo / leitor interno (--permitir-fixo)"
+$chkFixo.Text      = "Permitir disco fixo / leitor interno (--permitir-fixo --max-gb 2000)"
 $chkFixo.Font      = New-Object System.Drawing.Font("Segoe UI", 9)
 $chkFixo.ForeColor = $Grafite
 $chkFixo.Location  = New-Object System.Drawing.Point(0, 160)
-$chkFixo.Size      = New-Object System.Drawing.Size(420, 24)
+$chkFixo.Size      = New-Object System.Drawing.Size(520, 24)
 $pnlSelecao.Controls.Add($chkFixo)
 
 # Funções de Atualização
@@ -233,8 +232,9 @@ function Atualizar-Discos {
         return
     }
 
+    # Se o checkbox estiver ativo, envia --permitir-fixo e estende a trava de tamanho para até 2000 GB
     $argsList = "listar --todos --json"
-    if ($chkFixo.Checked) { $argsList += " --permitir-fixo" }
+    if ($chkFixo.Checked) { $argsList += " --permitir-fixo --max-gb 2000" }
 
     try {
         $json   = & $exePath $argsList.Split(' ')
@@ -481,8 +481,9 @@ $btnGravar.Add_Click({
 
     [System.Windows.Forms.Application]::DoEvents()
 
+    # Passa os parâmetros do desbloqueio no momento da gravação
     $cmdArgs = "gravar --imagem `"$($txtImg.Text)`" --destino $id --confirmar $id --progresso json"
-    if ($chkFixo.Checked) { $cmdArgs += " --permitir-fixo" }
+    if ($chkFixo.Checked) { $cmdArgs += " --permitir-fixo --max-gb 2000" }
 
     try {
         $psi                         = New-Object System.Diagnostics.ProcessStartInfo
