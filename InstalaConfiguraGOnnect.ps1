@@ -21,6 +21,37 @@ try {
 }
 catch { }
 
+# ============================================================ ELEVACAO
+# Estar na conta de administrador NAO basta: sem token elevado o Windows
+# nega acesso ao perfil de outro usuario (C:\Users\<outro>\Desktop), que e
+# exatamente o UnauthorizedAccessException do .lnk. Reabre elevado.
+$identidade = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal  = New-Object System.Security.Principal.WindowsPrincipal($identidade)
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    # $args e variavel automatica: nao pode ser atribuida.
+    $caminhoScript = $PSCommandPath
+    if (-not $caminhoScript) { $caminhoScript = $MyInvocation.MyCommand.Path }
+
+    try {
+        if (-not $caminhoScript) { throw "script sem caminho em disco (rodando de selecao no ISE)" }
+        $argumentos = @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden",
+            "-File", "`"$caminhoScript`""
+        )
+        Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $argumentos `
+                      -Verb RunAs -WindowStyle Hidden
+    }
+    catch {
+        [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show(
+            "Este instalador precisa ser executado como administrador." + [Environment]::NewLine +
+            "Abra o PowerShell com 'Executar como administrador' e rode o arquivo .ps1 de novo.",
+            "GOnnect", "OK", "Warning") | Out-Null
+    }
+    return
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -178,9 +209,48 @@ function Install-GOnnect {
     finally { $ProgressPreference = $progAnterior }
 }
 
-# Cria um .lnk garantindo pasta existente e removendo um arquivo antigo
-# travado/somente-leitura, que e a causa classica do "nao foi possivel
-# salvar o atalho".
+# ---------------------------------------------------------------------------
+# ATALHOS - Windows 11, script rodando como ADMIN em perfil de OUTRO usuario
+#
+# Duas armadilhas resolvidas aqui:
+#  1. O Desktop/Startup reais vem do registro do usuario (HKU\<SID>), nao de
+#     um caminho fixo: com OneDrive ligado, <perfil>\Desktop existe mas NAO e
+#     a area de trabalho de verdade.
+#  2. Gravar .lnk direto na pasta do outro usuario da "acesso negado". Por
+#     isso o atalho e montado no TEMP do admin e depois COPIADO para o
+#     destino, com takeown/icacls como plano B.
+# ---------------------------------------------------------------------------
+
+function Get-PastaShell {
+    param(
+        [Parameter(Mandatory=$true)]$Usuario,
+        [Parameter(Mandatory=$true)][string]$Nome,     # "Desktop" ou "Startup"
+        [Parameter(Mandatory=$true)][string]$Padrao    # relativo ao perfil
+    )
+
+    if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+        New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -ErrorAction SilentlyContinue | Out-Null
+    }
+
+    $chave = "HKU:\$($Usuario.SID)\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+    $valor = $null
+    try { $valor = (Get-ItemProperty -Path $chave -Name $Nome -ErrorAction Stop).$Nome } catch { }
+
+    if (-not $valor) {
+        $chave = "HKU:\$($Usuario.SID)\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+        try { $valor = (Get-ItemProperty -Path $chave -Name $Nome -ErrorAction Stop).$Nome } catch { }
+    }
+
+    if ($valor) {
+        # %USERPROFILE% aqui e o do usuario final, nao o do admin
+        $valor = $valor.Replace('%USERPROFILE%', $Usuario.PerfilPath)
+        $valor = [Environment]::ExpandEnvironmentVariables($valor)
+        if (Test-Path -LiteralPath $valor) { return $valor }
+    }
+
+    return (Join-Path $Usuario.PerfilPath $Padrao)
+}
+
 function New-Atalho {
     param(
         [Parameter(Mandatory=$true)][string]$Caminho,
@@ -192,68 +262,104 @@ function New-Atalho {
     if (-not (Test-Path -LiteralPath $pasta)) {
         New-Item -ItemType Directory -Path $pasta -Force -ErrorAction Stop | Out-Null
     }
-    if (Test-Path -LiteralPath $Caminho) {
-        Set-ItemProperty -LiteralPath $Caminho -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $Caminho -Force -ErrorAction SilentlyContinue
-    }
 
-    $ws = New-Object -ComObject WScript.Shell
-    $lnk = $ws.CreateShortcut($Caminho)
+    # Monta em area propria do admin: COM nao esbarra em permissao aqui
+    $temp = Join-Path $env:TEMP ("gonnect-" + [guid]::NewGuid().ToString("N") + ".lnk")
+    $ws   = New-Object -ComObject WScript.Shell
+    $lnk  = $ws.CreateShortcut($temp)
     $lnk.TargetPath = $Alvo
     if ($PastaTrabalho) { $lnk.WorkingDirectory = $PastaTrabalho }
     $lnk.Save()
 
+    try {
+        # Tira do caminho um .lnk antigo travado / somente-leitura
+        if (Test-Path -LiteralPath $Caminho) {
+            Set-ItemProperty -LiteralPath $Caminho -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $Caminho -Force -ErrorAction SilentlyContinue
+        }
+        Copy-Item -LiteralPath $temp -Destination $Caminho -Force -ErrorAction Stop
+    }
+    catch {
+        # Plano B: assume a posse do arquivo/pasta e tenta de novo
+        takeown /F "$Caminho" /A 2>$null | Out-Null
+        icacls  "$Caminho" /grant "*S-1-5-32-544:(F)" 2>$null | Out-Null
+        Remove-Item -LiteralPath $Caminho -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath $temp -Destination $Caminho -Force -ErrorAction Stop
+    }
+    finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+
     if (-not (Test-Path -LiteralPath $Caminho)) { throw "nao gravou $Caminho" }
-    icacls $Caminho /grant "Todos:(F)" 2>$null | Out-Null
+
+    # SIDs bem conhecidos: "Todos" e nome localizado e quebra em outro idioma.
+    # S-1-1-0 = Todos, S-1-5-32-544 = Administradores
+    icacls "$Caminho" /grant "*S-1-1-0:(F)" 2>$null | Out-Null
 }
 
-# Atalhos no perfil do USUARIO FINAL (area de trabalho + Iniciar/Startup).
-# Se o perfil recusar, cai para as pastas publicas da maquina.
-# Devolve a lista do que falhou, para avisar sem abortar a instalacao.
+# Inicializacao automatica pela chave Run do proprio usuario. Nao depende de
+# permissao em pasta, entao serve de rede de seguranca para o Startup.
+function Set-AutoStartRegistro {
+    param([Parameter(Mandatory=$true)]$Usuario)
+
+    if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+        New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -ErrorAction SilentlyContinue | Out-Null
+    }
+    $run = "HKU:\$($Usuario.SID)\Software\Microsoft\Windows\CurrentVersion\Run"
+    if (-not (Test-Path $run)) { New-Item -Path $run -Force -ErrorAction Stop | Out-Null }
+    Set-ItemProperty -Path $run -Name "GOnnect" -Value "`"$script:ExeGOnnect`"" -ErrorAction Stop
+
+    $lido = (Get-ItemProperty -Path $run -Name "GOnnect" -ErrorAction Stop).GOnnect
+    if (-not $lido) { throw "chave Run nao gravou" }
+}
+
 function New-AtalhosGOnnect {
     param([Parameter(Mandatory=$true)]$Usuario)
 
     $falhas = New-Object System.Collections.Generic.List[string]
-    $perfil = $Usuario.PerfilPath
 
-    # --- AREA DE TRABALHO -------------------------------------------------
-    # Desktop pode estar redirecionado para o OneDrive; tenta na ordem.
-    $destinosDesktop = @(
-        (Join-Path $perfil "OneDrive\Desktop"),
-        (Join-Path $perfil "Desktop"),
-        (Join-Path $perfil "Area de Trabalho"),
-        "$env:Public\Desktop"
-    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $desktop = Get-PastaShell -Usuario $Usuario -Nome "Desktop" -Padrao "Desktop"
+    $startup = Get-PastaShell -Usuario $Usuario -Nome "Startup" `
+               -Padrao "AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+    $menu    = Join-Path $Usuario.PerfilPath "AppData\Roaming\Microsoft\Windows\Start Menu\Programs"
 
-    if (-not $destinosDesktop) { $destinosDesktop = "$env:Public\Desktop" }
-
-    try { New-Atalho -Caminho (Join-Path $destinosDesktop "GOnnect.lnk") `
+    # --- AREA DE TRABALHO
+    try { New-Atalho -Caminho (Join-Path $desktop "GOnnect.lnk") `
                      -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe }
-    catch { $falhas.Add("atalho na area de trabalho") }
+    catch {
+        try { New-Atalho -Caminho (Join-Path "$env:Public\Desktop" "GOnnect.lnk") `
+                         -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe }
+        catch {
+            # Acesso Controlado a Pastas (Defender) bloqueia gravacao em
+            # Desktop/Documentos ate para admin. Vale citar no aviso.
+            $cfa = $false
+            try { $cfa = ((Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess -ne 0) } catch { }
+            if ($cfa) { $falhas.Add("atalho na area de trabalho (Acesso Controlado a Pastas ligado)") }
+            else      { $falhas.Add("atalho na area de trabalho") }
+        }
+    }
 
-    # --- INICIAR (menu) ---------------------------------------------------
-    $menu = Join-Path $perfil "AppData\Roaming\Microsoft\Windows\Start Menu\Programs"
+    # --- MENU INICIAR
     try { New-Atalho -Caminho (Join-Path $menu "GOnnect.lnk") `
                      -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe }
     catch { $falhas.Add("atalho no menu Iniciar") }
 
-    # --- INICIALIZACAO AUTOMATICA ----------------------------------------
-    # Primeiro o Startup do proprio usuario; se falhar, o da maquina toda.
-    $startupUsuario = Join-Path $menu "Startup"
-    $startupMaquina = Join-Path ([Environment]::GetFolderPath('CommonStartup')) "GOnnect.lnk"
-    if (-not $startupMaquina -or $startupMaquina -eq "GOnnect.lnk") {
-        $startupMaquina = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk"
-    }
-
+    # --- INICIALIZACAO AUTOMATICA: pasta Startup + chave Run (redundante
+    #     de proposito; basta uma das duas funcionar)
     $autoOk = $false
     try {
-        New-Atalho -Caminho (Join-Path $startupUsuario "GOnnect.lnk") `
+        New-Atalho -Caminho (Join-Path $startup "GOnnect.lnk") `
                    -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe
         $autoOk = $true
     }
-    catch {
+    catch { }
+
+    try { Set-AutoStartRegistro -Usuario $Usuario; $autoOk = $true } catch { }
+
+    if (-not $autoOk) {
         try {
-            New-Atalho -Caminho $startupMaquina -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe
+            New-Atalho -Caminho "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk" `
+                       -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe
             $autoOk = $true
         }
         catch { }
