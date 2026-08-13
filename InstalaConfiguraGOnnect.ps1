@@ -141,7 +141,13 @@ function Install-GOnnect {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $cabecalhos = @{ 'User-Agent' = 'Machadao-Instalador' }
 
-    $releases = Invoke-RestMethod -UseBasicParsing -ErrorAction Stop -Headers $cabecalhos `
+    # A barra de progresso do Invoke-* deixa o download absurdamente lento e
+    # e o que faz a tela parecer travada. Desliga durante a operacao.
+    $progAnterior = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+
+    $releases = Invoke-RestMethod -UseBasicParsing -ErrorAction Stop -Headers $cabecalhos -TimeoutSec 45 `
                 -Uri "https://api.github.com/repos/gonicus/gonnect/releases?per_page=100"
 
     $asset = $null
@@ -158,7 +164,7 @@ function Install-GOnnect {
 
     $destino = Join-Path $env:TEMP $asset.name
     Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $destino `
-        -UseBasicParsing -Headers $cabecalhos -ErrorAction Stop
+        -UseBasicParsing -Headers $cabecalhos -TimeoutSec 600 -ErrorAction Stop
 
     Start-Process -FilePath $destino -ArgumentList "/S" -Wait -WindowStyle Hidden
     Remove-Item $destino -Force -ErrorAction SilentlyContinue
@@ -167,20 +173,94 @@ function Install-GOnnect {
         throw "executavel nao encontrado em $script:ExeGOnnect"
     }
     return $tag
+
+    }
+    finally { $ProgressPreference = $progAnterior }
 }
 
-function New-AtalhosGOnnect {
+# Cria um .lnk garantindo pasta existente e removendo um arquivo antigo
+# travado/somente-leitura, que e a causa classica do "nao foi possivel
+# salvar o atalho".
+function New-Atalho {
+    param(
+        [Parameter(Mandatory=$true)][string]$Caminho,
+        [Parameter(Mandatory=$true)][string]$Alvo,
+        [string]$PastaTrabalho
+    )
+
+    $pasta = Split-Path -Path $Caminho -Parent
+    if (-not (Test-Path -LiteralPath $pasta)) {
+        New-Item -ItemType Directory -Path $pasta -Force -ErrorAction Stop | Out-Null
+    }
+    if (Test-Path -LiteralPath $Caminho) {
+        Set-ItemProperty -LiteralPath $Caminho -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $Caminho -Force -ErrorAction SilentlyContinue
+    }
+
     $ws = New-Object -ComObject WScript.Shell
+    $lnk = $ws.CreateShortcut($Caminho)
+    $lnk.TargetPath = $Alvo
+    if ($PastaTrabalho) { $lnk.WorkingDirectory = $PastaTrabalho }
+    $lnk.Save()
 
-    $s1 = $ws.CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk")
-    $s1.TargetPath = $script:ExeGOnnect
-    $s1.WorkingDirectory = $script:PastaExe
-    $s1.Save()
+    if (-not (Test-Path -LiteralPath $Caminho)) { throw "nao gravou $Caminho" }
+    icacls $Caminho /grant "Todos:(F)" 2>$null | Out-Null
+}
 
-    $s2 = $ws.CreateShortcut("$env:Public\Desktop\GOnnect.lnk")
-    $s2.TargetPath = $script:ExeGOnnect
-    $s2.WorkingDirectory = $script:PastaExe
-    $s2.Save()
+# Atalhos no perfil do USUARIO FINAL (area de trabalho + Iniciar/Startup).
+# Se o perfil recusar, cai para as pastas publicas da maquina.
+# Devolve a lista do que falhou, para avisar sem abortar a instalacao.
+function New-AtalhosGOnnect {
+    param([Parameter(Mandatory=$true)]$Usuario)
+
+    $falhas = New-Object System.Collections.Generic.List[string]
+    $perfil = $Usuario.PerfilPath
+
+    # --- AREA DE TRABALHO -------------------------------------------------
+    # Desktop pode estar redirecionado para o OneDrive; tenta na ordem.
+    $destinosDesktop = @(
+        (Join-Path $perfil "OneDrive\Desktop"),
+        (Join-Path $perfil "Desktop"),
+        (Join-Path $perfil "Area de Trabalho"),
+        "$env:Public\Desktop"
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+
+    if (-not $destinosDesktop) { $destinosDesktop = "$env:Public\Desktop" }
+
+    try { New-Atalho -Caminho (Join-Path $destinosDesktop "GOnnect.lnk") `
+                     -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe }
+    catch { $falhas.Add("atalho na area de trabalho") }
+
+    # --- INICIAR (menu) ---------------------------------------------------
+    $menu = Join-Path $perfil "AppData\Roaming\Microsoft\Windows\Start Menu\Programs"
+    try { New-Atalho -Caminho (Join-Path $menu "GOnnect.lnk") `
+                     -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe }
+    catch { $falhas.Add("atalho no menu Iniciar") }
+
+    # --- INICIALIZACAO AUTOMATICA ----------------------------------------
+    # Primeiro o Startup do proprio usuario; se falhar, o da maquina toda.
+    $startupUsuario = Join-Path $menu "Startup"
+    $startupMaquina = Join-Path ([Environment]::GetFolderPath('CommonStartup')) "GOnnect.lnk"
+    if (-not $startupMaquina -or $startupMaquina -eq "GOnnect.lnk") {
+        $startupMaquina = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk"
+    }
+
+    $autoOk = $false
+    try {
+        New-Atalho -Caminho (Join-Path $startupUsuario "GOnnect.lnk") `
+                   -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe
+        $autoOk = $true
+    }
+    catch {
+        try {
+            New-Atalho -Caminho $startupMaquina -Alvo $script:ExeGOnnect -PastaTrabalho $script:PastaExe
+            $autoOk = $true
+        }
+        catch { }
+    }
+    if (-not $autoOk) { $falhas.Add("inicializacao automatica") }
+
+    return $falhas
 }
 
 # Grava os .conf no perfil do USUARIO FINAL (nao no do admin). NAO MEXER
@@ -511,14 +591,15 @@ $script:BtnAcao.Add_Click({
             Set-Etapa "GOnnect ja instalado. Apenas atualizando o ramal." 2
         }
         else {
-            Set-Etapa "Procurando a ultima versao com instalador win64..." 1
+            Set-Etapa "Consultando o GitHub e baixando o instalador (pode levar alguns minutos)..." 1
             $script:BtnAcao.Text = "Aguarde..."
+            [System.Windows.Forms.Application]::DoEvents()
             $tag = Install-GOnnect
             Set-Etapa "Versao $tag instalada para todos os usuarios." 2
         }
 
         Set-Etapa "Conferindo atalhos e inicializacao automatica..." 3
-        New-AtalhosGOnnect
+        $falhasAtalho = New-AtalhosGOnnect -Usuario $script:UsuarioAlvo
 
         Set-Etapa "Gravando o ramal no perfil de $($script:UsuarioAlvo.NomeUsuario)..." 4
         Write-ConfiguracaoRamal -LocalAppDataUsuario $script:UsuarioAlvo.LocalAppData `
@@ -549,7 +630,13 @@ $script:BtnAcao.Add_Click({
 
         $script:Concluido  = $true
         $script:PodeFechar = $true
-        Set-Etapa "Ramal $ramal configurado para $($script:UsuarioAlvo.NomeUsuario)." 6 $script:CorVerde
+        if ($falhasAtalho -and $falhasAtalho.Count -gt 0) {
+            Set-Etapa ("Ramal $ramal configurado. Nao foi possivel criar: " +
+                       ($falhasAtalho -join ", ") + ".") 6 $script:CorAmbar
+        }
+        else {
+            Set-Etapa "Ramal $ramal configurado para $($script:UsuarioAlvo.NomeUsuario)." 6 $script:CorVerde
+        }
         $script:BtnAcao.Text      = "Concluido"
         $script:BtnFechar.Enabled = $true
 
