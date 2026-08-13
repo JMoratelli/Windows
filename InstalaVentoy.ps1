@@ -206,21 +206,57 @@ function Find-IsosPadrao {
 
 function Find-IsosNoPC {
     param($Status)
+    # Varredura propria (em vez de Get-ChildItem -Recurse) para poder responder
+    # a interface e aceitar cancelamento no meio do caminho.
+    $script:CancelarBusca = $false
+    $pendentes = @($script:Catalogo | Where-Object { $r = $_.Rotulo; -not ($script:Isos | Where-Object { $_.Rotulo -eq $r }) })
+    if ($pendentes.Count -eq 0) { return }
+
+    $pular = @("$env:SystemRoot\WinSxS", "$env:SystemRoot\servicing", "System Volume Information", '$Recycle.Bin')
     $letras = (Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' }).DriveLetter
-    foreach ($c in $script:Catalogo) {
-        if ($script:Isos | Where-Object { $_.Rotulo -eq $c.Rotulo }) { continue }
-        foreach ($d in $letras) {
-            if ($Status) { $Status.Text = "Varrendo ${d}: por $($c.Rotulo)..."; Respirar }
-            $hit = Get-ChildItem -Path "${d}:\" -Filter $c.Padrao -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($hit) { Add-Iso $hit.FullName | Out-Null; break }
+    $conta = 0
+
+    foreach ($d in $letras) {
+        if ($script:CancelarBusca) { return }
+        $fila = New-Object System.Collections.Generic.Queue[string]
+        $fila.Enqueue("${d}:\")
+
+        while ($fila.Count -gt 0) {
+            if ($script:CancelarBusca) { return }
+            $dir = $fila.Dequeue()
+            $conta++
+            if (($conta % 12) -eq 0) {
+                if ($Status) { $Status.Text = "Varrendo ${d}: ...`r`n$dir" }
+                Respirar
+            }
+
+            try {
+                foreach ($arq in [System.IO.Directory]::EnumerateFiles($dir, "*.iso")) {
+                    $nome = [System.IO.Path]::GetFileName($arq)
+                    foreach ($c in $pendentes) {
+                        if ($nome -like $c.Padrao) {
+                            if (Add-Iso $arq) {
+                                $pendentes = @($pendentes | Where-Object { $_.Rotulo -ne $c.Rotulo })
+                                if ($Status) { $Status.Text = "Encontrada: $nome"; Respirar }
+                            }
+                            break
+                        }
+                    }
+                    if ($pendentes.Count -eq 0) { return }
+                }
+            } catch { }
+
+            try {
+                foreach ($sub in [System.IO.Directory]::EnumerateDirectories($dir)) {
+                    $nomeDir = [System.IO.Path]::GetFileName($sub)
+                    if ($pular -contains $nomeDir -or $pular -contains $sub) { continue }
+                    $info = New-Object System.IO.DirectoryInfo $sub
+                    if ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+                    $fila.Enqueue($sub)
+                }
+            } catch { }
         }
     }
-}
-
-function Get-VentoyLocal {
-    return Get-ChildItem $script:RaizVentoy -Directory -ErrorAction SilentlyContinue |
-           Where-Object { Test-Path (Join-Path $_.FullName "Ventoy2Disk.exe") } |
-           Sort-Object Name -Descending | Select-Object -First 1
 }
 
 function Update-Ventoy {
@@ -589,6 +625,18 @@ function Update-Discos {
     Update-Espaco
 }
 
+function Set-InterfaceAtiva {
+    param([bool]$Ativa)
+    $cboDisco.Enabled   = $Ativa
+    $clbIsos.Enabled    = $Ativa
+    $btnAdd.Enabled     = $Ativa
+    $btnReler.Enabled   = $Ativa
+    $btnBuscar.Enabled  = $Ativa
+    $btnIniciar.Enabled = $Ativa
+    $btnFechar.Enabled  = $Ativa
+    Respirar
+}
+
 function Reset-Confirmacao {
     $script:Fase = "pronto"
     $btnIniciar.Text      = "Iniciar"
@@ -667,14 +715,34 @@ $btnAdd.Add_Click({
 })
 
 $btnBuscar.Add_Click({
-    $btnBuscar.Enabled = $false
+    if ($script:Buscando) {
+        $script:CancelarBusca = $true
+        $btnBuscar.Text    = "Cancelando..."
+        $btnBuscar.Enabled = $false
+        return
+    }
+
+    $script:Buscando = $true
+    Set-InterfaceAtiva $false
+    $btnBuscar.Enabled   = $true
+    $btnBuscar.Text      = "Cancelar varredura"
+    $btnBuscar.BackColor = $script:Vinho
     $msg.ForeColor = $script:Grafite
     $msg.Text = "Varrendo as unidades fixas. Isso pode levar alguns minutos..."
     Respirar
-    Find-IsosNoPC $msg
+
+    try   { Find-IsosNoPC $msg }
+    catch { }
+
+    $cancelada = $script:CancelarBusca
+    $script:Buscando = $false
     Update-ListaIsos
-    $msg.Text = "Busca concluida. $($script:Isos.Count) imagem(ns) na lista."
-    $btnBuscar.Enabled = $true
+    $btnBuscar.Text      = "Buscar em todo o PC"
+    $btnBuscar.BackColor = $script:Grafite
+    Set-InterfaceAtiva $true
+    $msg.ForeColor = $script:Grafite
+    if ($cancelada) { $msg.Text = "Varredura cancelada. $($script:Isos.Count) imagem(ns) na lista." }
+    else            { $msg.Text = "Busca concluida. $($script:Isos.Count) imagem(ns) na lista." }
 })
 
 $btnFechar.Add_Click({
