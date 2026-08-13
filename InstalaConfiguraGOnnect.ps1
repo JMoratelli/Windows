@@ -1,140 +1,210 @@
-#Instala e Configura SIP GOnnect
-# ==========================================================================
-# Este script foi ajustado para ser executado com uma conta de ADMINISTRADOR
-# diferente do usuario final que vai efetivamente usar o GOnnect.
-# Por isso, os caminhos de AppData NAO usam $env:LOCALAPPDATA (que aponta
-# para o perfil do administrador), e sim o perfil do usuario logado
-# interativamente na maquina, resolvido via Get-UsuarioLogadoAppDataLocal.
-# ==========================================================================
+<#
+    Instala e configura o GOnnect (SIP) - Machadao Corp
+    Tela unica: pede Ramal e Senha, e ao confirmar ja instala e configura.
+
+    O script roda com conta de ADMINISTRADOR diferente do usuario final.
+    Por isso os caminhos de AppData NAO usam $env:LOCALAPPDATA: o perfil do
+    usuario logado interativamente e resolvido via Get-UsuarioLogadoInfo.
+    NAO alterar essa parte - sem ela o GOnnect nao le a configuracao.
+
+    Desenvolvido por @JJMoratelli
+#>
+
+# ============================================================ CONSOLE OCULTO
+Add-Type -Namespace Nativo -Name Janela -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+[DllImport("user32.dll")]   public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+'@ -ErrorAction SilentlyContinue
+try {
+    $h = [Nativo.Janela]::GetConsoleWindow()
+    if ($h -ne [System.IntPtr]::Zero) { [Nativo.Janela]::ShowWindow($h, 0) | Out-Null }
+}
+catch { }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
 
-# ==========================================================================
-# FUNCAO: Descobre o AppData\Local do usuario logado interativamente
-# (independente de quem esta rodando o script)
-# ==========================================================================
+# O ISE mantem variaveis entre execucoes: zera o estado logo no inicio.
+$script:Concluido   = $false
+$script:PodeFechar  = $true
+$script:UsuarioAlvo = $null
+
+# ============================================================ PALETA
+$script:CorPreto   = [System.Drawing.ColorTranslator]::FromHtml("#12161C")
+$script:CorAzul    = [System.Drawing.ColorTranslator]::FromHtml("#1A5FB4")
+$script:CorAzulH   = [System.Drawing.ColorTranslator]::FromHtml("#154C90")
+$script:CorCinza   = [System.Drawing.ColorTranslator]::FromHtml("#A9B2BD")
+$script:CorGrafite = [System.Drawing.ColorTranslator]::FromHtml("#5B6672")
+$script:CorClaro   = [System.Drawing.ColorTranslator]::FromHtml("#9AA4AF")
+$script:CorEyebrow = [System.Drawing.ColorTranslator]::FromHtml("#7C93AE")
+$script:CorCredito = [System.Drawing.ColorTranslator]::FromHtml("#B4BCC5")
+$script:CorVerde   = [System.Drawing.ColorTranslator]::FromHtml("#0A6F66")
+$script:CorAmbar   = [System.Drawing.ColorTranslator]::FromHtml("#8A5A00")
+$script:CorVinho   = [System.Drawing.ColorTranslator]::FromHtml("#C01C28")
+$script:CorCampo   = [System.Drawing.ColorTranslator]::FromHtml("#EDEFF2")
+
+$script:ExeGOnnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
+$script:PastaExe   = "C:\Program Files\GOnnect\bin"
+
+# ============================================================ FUNCOES
+# Descobre o AppData\Local do usuario logado interativamente,
+# independente de quem esta rodando o script. NAO MEXER.
 function Get-UsuarioLogadoInfo {
-    # Descobre o usuario logado interativamente na sessao do console
-    $usuarioLogado = (Get-CimInstance Win32_ComputerSystem).UserName
+    # Cadeia de deteccao: para na primeira que devolver um nome.
+    # 1) Win32_ComputerSystem.UserName  - vazio em RDP, sessao bloqueada
+    #    ou quando o script sobe por tarefa agendada / SYSTEM
+    # 2) dono do explorer.exe           - quem tem shell de verdade
+    # 3) query session / quser          - sessao Active no terminal
+    # 4) a propria conta que roda        - ultimo recurso
+    $candidatos = New-Object System.Collections.Generic.List[string]
 
-    if ([string]::IsNullOrEmpty($usuarioLogado)) {
-        throw "Nao foi possivel identificar um usuario logado interativamente na maquina."
+    try {
+        $n = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
+        if ($n) { $candidatos.Add($n) }
+    } catch { }
+
+    try {
+        Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction Stop |
+            ForEach-Object {
+                $dono = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue
+                if ($dono -and $dono.User) {
+                    $dom = if ($dono.Domain) { $dono.Domain } else { $env:COMPUTERNAME }
+                    $candidatos.Add("$dom\$($dono.User)")
+                }
+            }
+    } catch { }
+
+    try {
+        $linhas = & query session 2>$null
+        foreach ($linha in $linhas) {
+            if ($linha -match '^\s*>?\S*\s+(\S+)\s+\d+\s+Ativ' -or
+                $linha -match '^\s*>?\S*\s+(\S+)\s+\d+\s+Active') {
+                $u = $matches[1]
+                if ($u -and $u -notmatch '^\d+$') { $candidatos.Add("$env:COMPUTERNAME\$u") }
+            }
+        }
+    } catch { }
+
+    if ($env:USERNAME) {
+        $dom = if ($env:USERDOMAIN) { $env:USERDOMAIN } else { $env:COMPUTERNAME }
+        $candidatos.Add("$dom\$env:USERNAME")
     }
 
-    # UserName vem como DOMINIO\usuario ou MAQUINA\usuario - extrai so o nome
-    $nomeUsuario = $usuarioLogado.Split('\')[-1]
+    $vistos = @{}
+    foreach ($usuarioLogado in $candidatos) {
+        if (-not $usuarioLogado) { continue }
+        $chave = $usuarioLogado.ToLower()
+        if ($vistos.ContainsKey($chave)) { continue }
+        $vistos[$chave] = $true
 
-    # Converte o nome da conta em SID
-    $objUser = New-Object System.Security.Principal.NTAccount($usuarioLogado)
-    $sid = $objUser.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        # Contas de servico nao tem perfil util para o GOnnect
+        if ($usuarioLogado -match '\\(SYSTEM|LOCAL SERVICE|NETWORK SERVICE|DWM-\d+|UMFD-\d+)$') { continue }
 
-    # Busca o caminho do perfil real desse SID no registro
-    $chaveProfile = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
-    if (-not (Test-Path $chaveProfile)) {
-        throw "Perfil do usuario $usuarioLogado nao encontrado no registro (SID: $sid)."
+        try {
+            $objUser = New-Object System.Security.Principal.NTAccount($usuarioLogado)
+            $sid = $objUser.Translate([System.Security.Principal.SecurityIdentifier]).Value
+
+            $chaveProfile = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+            if (-not (Test-Path $chaveProfile)) { continue }
+
+            $caminhoPerfil = (Get-ItemProperty -Path $chaveProfile).ProfileImagePath
+            if (-not (Test-Path -LiteralPath $caminhoPerfil)) { continue }
+
+            return [PSCustomObject]@{
+                NomeCompleto = $usuarioLogado
+                NomeUsuario  = $usuarioLogado.Split('\')[-1]
+                SID          = $sid
+                PerfilPath   = $caminhoPerfil
+                LocalAppData = (Join-Path $caminhoPerfil "AppData\Local")
+            }
+        }
+        catch { continue }
     }
 
-    $caminhoPerfil = (Get-ItemProperty -Path $chaveProfile).ProfileImagePath
-    $localAppData = Join-Path $caminhoPerfil "AppData\Local"
+    throw "Nao foi possivel resolver o perfil do usuario final nesta maquina."
+}
 
-    return [PSCustomObject]@{
-        NomeCompleto  = $usuarioLogado
-        NomeUsuario   = $nomeUsuario
-        SID           = $sid
-        PerfilPath    = $caminhoPerfil
-        LocalAppData  = $localAppData
+function Test-GOnnectInstalado {
+    $chaves = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    $achado = Get-ItemProperty -Path $chaves -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -like "*GOnnect*" }
+    return [bool]$achado
+}
+
+# A release mais recente nem sempre traz instalador Windows: varre o
+# historico ate achar um asset win64.
+function Install-GOnnect {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $cabecalhos = @{ 'User-Agent' = 'Machadao-Instalador' }
+
+    $releases = Invoke-RestMethod -UseBasicParsing -ErrorAction Stop -Headers $cabecalhos `
+                -Uri "https://api.github.com/repos/gonicus/gonnect/releases?per_page=100"
+
+    $asset = $null
+    $tag   = $null
+    foreach ($rel in $releases) {
+        $achado = $rel.assets |
+                  Where-Object { $_.name -like "*win64*.exe" } |
+                  Select-Object -First 1
+        if ($achado) { $asset = $achado; $tag = $rel.tag_name; break }
     }
+    if (-not $asset) {
+        throw "nenhuma das $($releases.Count) releases tem instalador win64"
+    }
+
+    $destino = Join-Path $env:TEMP $asset.name
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $destino `
+        -UseBasicParsing -Headers $cabecalhos -ErrorAction Stop
+
+    Start-Process -FilePath $destino -ArgumentList "/S" -Wait -WindowStyle Hidden
+    Remove-Item $destino -Force -ErrorAction SilentlyContinue
+
+    if (-not (Test-Path -LiteralPath $script:ExeGOnnect)) {
+        throw "executavel nao encontrado em $script:ExeGOnnect"
+    }
+    return $tag
 }
 
-# Resolve uma vez no inicio do script e usa em tudo daqui pra frente
-try {
-    $UsuarioAlvo = Get-UsuarioLogadoInfo
-    Write-Host "Usuario final identificado: $($UsuarioAlvo.NomeCompleto)" -ForegroundColor Cyan
-    Write-Host "Perfil: $($UsuarioAlvo.PerfilPath)" -ForegroundColor DarkGray
-}
-catch {
-    Write-Host "ERRO: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Nao e possivel continuar sem identificar o usuario final." -ForegroundColor Red
-    return
+function New-AtalhosGOnnect {
+    $ws = New-Object -ComObject WScript.Shell
+
+    $s1 = $ws.CreateShortcut("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk")
+    $s1.TargetPath = $script:ExeGOnnect
+    $s1.WorkingDirectory = $script:PastaExe
+    $s1.Save()
+
+    $s2 = $ws.CreateShortcut("$env:Public\Desktop\GOnnect.lnk")
+    $s2.TargetPath = $script:ExeGOnnect
+    $s2.WorkingDirectory = $script:PastaExe
+    $s2.Save()
 }
 
-# ==========================================================================
-# FUNCAO: Abre a tela de configuracao do Ramal (Usuario/Senha) e grava o INI
-# ==========================================================================
-function Show-ConfiguracaoRamal {
+# Grava os .conf no perfil do USUARIO FINAL (nao no do admin). NAO MEXER
+# nos caminhos nem no icacls: sem isso o GOnnect nao le nem regrava.
+function Write-ConfiguracaoRamal {
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$LocalAppDataUsuario
+        [Parameter(Mandatory=$true)][string]$LocalAppDataUsuario,
+        [Parameter(Mandatory=$true)][string]$Ramal,
+        [Parameter(Mandatory=$true)][string]$Senha
     )
 
-    # DEFINICAO DO CAMINHO EXATO (no perfil do USUARIO FINAL, nao do admin)
-    $CaminhoDestino = Join-Path $LocalAppDataUsuario "gonnect\GOnnect\gonnect"
-    $NomeArquivo = "01-sip.conf"
-    $CaminhoCompleto = Join-Path $CaminhoDestino $NomeArquivo
+    $CaminhoDestino  = Join-Path $LocalAppDataUsuario "gonnect\GOnnect\gonnect"
+    $CaminhoCompleto = Join-Path $CaminhoDestino "01-sip.conf"
+    $CaminhoUserConf = Join-Path $CaminhoDestino "99-user.conf"
 
-    # FECHA O GONNECT CASO JA ESTEJA ABERTO
-    # (Garante que ele libere a pasta e leia o novo arquivo ao reabrir)
+    # Fecha o GOnnect para liberar a pasta e forcar releitura ao reabrir
     Stop-Process -Name "GOnnect" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
 
-    # CRIACAO DA INTERFACE GRAFICA (GUI)
-    $Form = New-Object System.Windows.Forms.Form
-    $Form.Text = "Configuracao de Ramal - GOnnect"
-    $Form.Size = New-Object System.Drawing.Size(350,220)
-    $Form.StartPosition = "CenterScreen"
-    $Form.FormBorderStyle = "FixedDialog"
-    $Form.MaximizeBox = $false
-    $Form.MinimizeBox = $false
-    $Form.TopMost = $true # Mantem a janela na frente
+    if (-not (Test-Path -LiteralPath $CaminhoDestino)) {
+        New-Item -ItemType Directory -Path $CaminhoDestino -Force | Out-Null
+    }
 
-    $lblUsuario = New-Object System.Windows.Forms.Label
-    $lblUsuario.Location = New-Object System.Drawing.Point(20,20)
-    $lblUsuario.Size = New-Object System.Drawing.Size(100,20)
-    $lblUsuario.Text = "Ramal (Usuario):"
-    $Form.Controls.Add($lblUsuario)
-
-    $txtUsuario = New-Object System.Windows.Forms.TextBox
-    $txtUsuario.Location = New-Object System.Drawing.Point(130,17)
-    $txtUsuario.Size = New-Object System.Drawing.Size(160,20)
-    $Form.Controls.Add($txtUsuario)
-
-    $lblSenha = New-Object System.Windows.Forms.Label
-    $lblSenha.Location = New-Object System.Drawing.Point(20,60)
-    $lblSenha.Size = New-Object System.Drawing.Size(100,20)
-    $lblSenha.Text = "Senha do Ramal:"
-    $Form.Controls.Add($lblSenha)
-
-    $txtSenha = New-Object System.Windows.Forms.TextBox
-    $txtSenha.Location = New-Object System.Drawing.Point(130,57)
-    $txtSenha.Size = New-Object System.Drawing.Size(160,20)
-    $txtSenha.PasswordChar = '*'
-    $Form.Controls.Add($txtSenha)
-
-    $btnSalvar = New-Object System.Windows.Forms.Button
-    $btnSalvar.Location = New-Object System.Drawing.Point(100,110)
-    $btnSalvar.Size = New-Object System.Drawing.Size(130,30)
-    $btnSalvar.Text = "Salvar e Iniciar"
-    $Form.Controls.Add($btnSalvar)
-
-    # ACAO AO CLICAR NO BOTAO SALVAR
-    $btnSalvar.Add_Click({
-        $Ramal = $txtUsuario.Text.Trim()
-        $Senha = $txtSenha.Text.Trim()
-
-        if ([string]::IsNullOrEmpty($Ramal) -or [string]::IsNullOrEmpty($Senha)) {
-            [System.Windows.Forms.MessageBox]::Show("Por favor, preencha o Ramal e a Senha para salvar!", "Aviso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
-            return
-        }
-
-        try {
-            # CRIA O DESTINO CASO NAO EXISTA
-            if (-not (Test-Path -LiteralPath $CaminhoDestino)) {
-                New-Item -ItemType Directory -Path $CaminhoDestino -Force | Out-Null
-            }
-
-            # Template do arquivo de configuracao
-            $ConteudoINI = @"
+    $ConteudoINI = @"
 [template]
 name="Local SIP Configuration"
 plain=true
@@ -194,209 +264,341 @@ type=plain
 data=$Senha
 "@
 
-            # Salva ou substitui o arquivo com codificacao limpa (01-sip.conf)
-            Set-Content -Path $CaminhoCompleto -Value $ConteudoINI -Force -Encoding UTF8
-
-            # GERAR O ARQUIVO 99-USER.CONF
-            $CaminhoUserConf = Join-Path $CaminhoDestino "99-user.conf"
-            $ConteudoUserConf = @"
+    $ConteudoUserConf = @"
 [generic]
 showTrayDialog=true
 noSyncSystemMute=false
 showMainWindowOnStart=true
 useOwnWindowDecoration=false
 "@
-            Set-Content -Path $CaminhoUserConf -Value $ConteudoUserConf -Force -Encoding UTF8
 
-            # AJUSTA PERMISSOES PARA QUE O USUARIO FINAL (dono do perfil) TENHA
-            # CONTROLE TOTAL, ja que o script roda com outra conta (admin)
-            icacls $CaminhoCompleto /grant "Todos:(F)" | Out-Null
-            icacls $CaminhoUserConf /grant "Todos:(F)" | Out-Null
+    Set-Content -Path $CaminhoCompleto -Value $ConteudoINI      -Force -Encoding UTF8
+    Set-Content -Path $CaminhoUserConf -Value $ConteudoUserConf -Force -Encoding UTF8
 
-            $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
-            $pastaTrabalho = "C:\Program Files\GOnnect\bin"
+    # O script roda como admin: libera controle total para o dono do perfil
+    icacls $CaminhoCompleto /grant "Todos:(F)" | Out-Null
+    icacls $CaminhoUserConf /grant "Todos:(F)" | Out-Null
 
-            # 1. PROGRAMA O GONNECT PARA INICIAR NOS PROXIMOS REBOOTS E CRIA ATALHOS
-            if (Test-Path -LiteralPath $caminhoExeGonnect) {
-                $WshShell = New-Object -ComObject WScript.Shell
-
-                # Atalho na pasta Startup de todos os usuários
-                $caminhoStartup = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk"
-                $AtalhoStartup = $WshShell.CreateShortcut($caminhoStartup)
-                $AtalhoStartup.TargetPath = $caminhoExeGonnect
-                $AtalhoStartup.WorkingDirectory = $pastaTrabalho
-                $AtalhoStartup.Save()
-
-                # Atalho na Área de Trabalho de todos os usuários
-                $caminhoDesktop = "$env:Public\Desktop\GOnnect.lnk"
-                $AtalhoDesktop = $WshShell.CreateShortcut($caminhoDesktop)
-                $AtalhoDesktop.TargetPath = $caminhoExeGonnect
-                $AtalhoDesktop.WorkingDirectory = $pastaTrabalho
-                $AtalhoDesktop.Save()
-            }
-
-            # 2. MENSAGEM DE SUCESSO E FECHAR TELA
-            [System.Windows.Forms.MessageBox]::Show("Configuracao salva com sucesso! O GOnnect sera iniciado em seguida.", "Sucesso", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-
-            $Form.Close()
-        }
-        catch {
-            [System.Windows.Forms.MessageBox]::Show("Erro ao criar pastas ou salvar o arquivo: $($_.Exception.Message)", "Erro", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-        }
-    })
-
-    # Exibe a tela
-    $Form.ShowDialog() | Out-Null
+    # Confere o que gravou antes de dizer que deu certo
+    if (-not (Test-Path -LiteralPath $CaminhoCompleto)) {
+        throw "o arquivo 01-sip.conf nao foi gravado em $CaminhoDestino"
+    }
+    if (-not ((Get-Content -LiteralPath $CaminhoCompleto -Raw) -match [regex]::Escape("username=$Ramal"))) {
+        throw "o 01-sip.conf gravado nao contem o ramal informado"
+    }
 }
 
-# ==========================================================================
-# FUNCAO: Inicia um executavel DENTRO DA SESSAO do usuario final, mesmo
-# que o script esteja rodando com a conta do administrador da empresa.
-# Usa uma tarefa agendada temporaria com token interativo (/IT), que so
-# funciona se o usuario alvo estiver de fato logado no console - o que
-# e exatamente o nosso caso.
-# ==========================================================================
+# Sobe o GOnnect DENTRO DA SESSAO do usuario final via tarefa agendada
+# temporaria com token interativo (/IT).
 function Start-ProcessoNaSessaoDoUsuario {
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$NomeUsuario,
-        [Parameter(Mandatory=$true)]
-        [string]$CaminhoExe,
-        [Parameter(Mandatory=$true)]
-        [string]$PastaTrabalho
+        [Parameter(Mandatory=$true)][string]$NomeUsuario,
+        [Parameter(Mandatory=$true)][string]$CaminhoExe
     )
 
     $nomeTarefa = "GOnnect-Start-Temp"
-    $comando = "`"$CaminhoExe`""
+    $comando    = "`"$CaminhoExe`""
+    $horaExec   = (Get-Date).AddMinutes(1).ToString("HH:mm")
+
+    schtasks /Delete /TN $nomeTarefa /F 2>$null | Out-Null
+    schtasks /Create /TN $nomeTarefa /TR $comando /SC ONCE /ST $horaExec `
+             /RU $NomeUsuario /IT /F | Out-Null
+    schtasks /Run /TN $nomeTarefa | Out-Null
+    Start-Sleep -Seconds 5
+    schtasks /Delete /TN $nomeTarefa /F 2>$null | Out-Null
+}
+
+# ============================================================ JANELA
+$LARG = 660
+$script:Form          = New-Object System.Windows.Forms.Form
+$Form                 = $script:Form
+$Form.Text            = "GOnnect (SIP) - Machadao Corp"
+$Form.Size            = New-Object System.Drawing.Size($LARG, 470)
+$Form.StartPosition   = "CenterScreen"
+$Form.FormBorderStyle = "FixedDialog"
+$Form.MaximizeBox     = $false
+$Form.MinimizeBox     = $false
+$Form.ControlBox      = $false
+$Form.TopMost         = $true
+$Form.BackColor       = [System.Drawing.Color]::White
+
+$Form.Add_FormClosing({
+    param($s, $e)
+    if (-not $script:PodeFechar) { $e.Cancel = $true }
+})
+
+# ============================================================ CABECALHO
+$cab           = New-Object System.Windows.Forms.Panel
+$cab.Size      = New-Object System.Drawing.Size($LARG, 96)
+$cab.BackColor = $script:CorPreto
+$Form.Controls.Add($cab)
+
+$eyebrow           = New-Object System.Windows.Forms.Label
+$eyebrow.Text      = "M A C H A D A O   C O R P"
+$eyebrow.Font      = New-Object System.Drawing.Font("Consolas", 9)
+$eyebrow.ForeColor = $script:CorEyebrow
+$eyebrow.Location  = New-Object System.Drawing.Point(34, 20)
+$eyebrow.AutoSize  = $true
+$cab.Controls.Add($eyebrow)
+
+$titulo           = New-Object System.Windows.Forms.Label
+$titulo.Text      = "Instalacao do ramal GOnnect"
+$titulo.Font      = New-Object System.Drawing.Font("Segoe UI", 19)
+$titulo.ForeColor = [System.Drawing.Color]::White
+$titulo.Location  = New-Object System.Drawing.Point(32, 42)
+$titulo.AutoSize  = $true
+$cab.Controls.Add($titulo)
+
+# Duas linhas: maquina em cima, usuario embaixo. Nomes de dominio+usuario
+# nao cabem numa linha so ao lado do titulo - por isso separados.
+$script:Contexto           = New-Object System.Windows.Forms.Label
+$script:Contexto.Text      = "$env:COMPUTERNAME"
+$script:Contexto.Font      = New-Object System.Drawing.Font("Consolas", 9)
+$script:Contexto.ForeColor = [System.Drawing.ColorTranslator]::FromHtml("#C9D3DE")
+$script:Contexto.Location  = New-Object System.Drawing.Point(360, 46)
+$script:Contexto.Size      = New-Object System.Drawing.Size(($LARG - 394), 18)
+$script:Contexto.TextAlign = "MiddleRight"
+$script:Contexto.AutoEllipsis = $true
+$cab.Controls.Add($script:Contexto)
+
+$script:ContextoUsuario           = New-Object System.Windows.Forms.Label
+$script:ContextoUsuario.Text      = ""
+$script:ContextoUsuario.Font      = New-Object System.Drawing.Font("Consolas", 9)
+$script:ContextoUsuario.ForeColor = $script:CorEyebrow
+$script:ContextoUsuario.Location  = New-Object System.Drawing.Point(360, 66)
+$script:ContextoUsuario.Size      = New-Object System.Drawing.Size(($LARG - 394), 18)
+$script:ContextoUsuario.TextAlign = "MiddleRight"
+$script:ContextoUsuario.AutoEllipsis = $true
+$cab.Controls.Add($script:ContextoUsuario)
+
+# ============================================================ CONTEUDO
+$ajuda           = New-Object System.Windows.Forms.Label
+$ajuda.Text      = "Informe o ramal e a senha. O GOnnect sera instalado e configurado para o usuario logado."
+$ajuda.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
+$ajuda.ForeColor = $script:CorGrafite
+$ajuda.Location  = New-Object System.Drawing.Point(36, 122)
+$ajuda.Size      = New-Object System.Drawing.Size(($LARG - 70), 24)
+$Form.Controls.Add($ajuda)
+
+$lblRamal           = New-Object System.Windows.Forms.Label
+$lblRamal.Text      = "Ramal"
+$lblRamal.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
+$lblRamal.ForeColor = $script:CorGrafite
+$lblRamal.Location  = New-Object System.Drawing.Point(36, 160)
+$lblRamal.AutoSize  = $true
+$Form.Controls.Add($lblRamal)
+
+$script:TxtRamal          = New-Object System.Windows.Forms.TextBox
+$script:TxtRamal.Font     = New-Object System.Drawing.Font("Consolas", 16)
+$script:TxtRamal.Location = New-Object System.Drawing.Point(36, 182)
+$script:TxtRamal.Size     = New-Object System.Drawing.Size(240, 38)
+$Form.Controls.Add($script:TxtRamal)
+
+$lblSenha           = New-Object System.Windows.Forms.Label
+$lblSenha.Text      = "Senha do ramal"
+$lblSenha.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
+$lblSenha.ForeColor = $script:CorGrafite
+$lblSenha.Location  = New-Object System.Drawing.Point(312, 160)
+$lblSenha.AutoSize  = $true
+$Form.Controls.Add($lblSenha)
+
+$script:TxtSenha              = New-Object System.Windows.Forms.TextBox
+$script:TxtSenha.Font         = New-Object System.Drawing.Font("Consolas", 16)
+$script:TxtSenha.Location     = New-Object System.Drawing.Point(312, 182)
+$script:TxtSenha.Size         = New-Object System.Drawing.Size(276, 38)
+$script:TxtSenha.PasswordChar = '*'
+$Form.Controls.Add($script:TxtSenha)
+
+$script:LblPerfil           = New-Object System.Windows.Forms.Label
+$script:LblPerfil.Font      = New-Object System.Drawing.Font("Segoe UI", 9)
+$script:LblPerfil.ForeColor = $script:CorClaro
+$script:LblPerfil.Location  = New-Object System.Drawing.Point(36, 228)
+$script:LblPerfil.Size      = New-Object System.Drawing.Size(($LARG - 70), 20)
+$Form.Controls.Add($script:LblPerfil)
+
+# ============================================================ MENSAGEM
+$script:Msg           = New-Object System.Windows.Forms.Label
+$script:Msg.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
+$script:Msg.ForeColor = $script:CorGrafite
+$script:Msg.Location  = New-Object System.Drawing.Point(36, 256)
+$script:Msg.Size      = New-Object System.Drawing.Size(($LARG - 70), 44)
+$Form.Controls.Add($script:Msg)
+
+$script:Barra          = New-Object System.Windows.Forms.ProgressBar
+$script:Barra.Location = New-Object System.Drawing.Point(36, 306)
+$script:Barra.Size     = New-Object System.Drawing.Size(($LARG - 70), 6)
+$script:Barra.Maximum  = 6
+$script:Barra.Style    = "Continuous"
+$Form.Controls.Add($script:Barra)
+
+# ============================================================ RODAPE
+$creditos           = New-Object System.Windows.Forms.Label
+$creditos.Text      = "Desenvolvido por @JJMoratelli"
+$creditos.Font      = New-Object System.Drawing.Font("Segoe UI", 9)
+$creditos.ForeColor = $script:CorCredito
+$creditos.Location  = New-Object System.Drawing.Point(36, 392)
+$creditos.AutoSize  = $true
+$Form.Controls.Add($creditos)
+
+$script:BtnAcao = New-Object System.Windows.Forms.Button
+$script:BtnAcao.Text      = "Instalar e configurar"
+$script:BtnAcao.Font      = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+$script:BtnAcao.Size      = New-Object System.Drawing.Size(210, 50)
+$script:BtnAcao.Location  = New-Object System.Drawing.Point(($LARG - 254), 372)
+$script:BtnAcao.FlatStyle = "Flat"
+$script:BtnAcao.FlatAppearance.BorderSize = 0
+$script:BtnAcao.BackColor = $script:CorAzul
+$script:BtnAcao.ForeColor = [System.Drawing.Color]::White
+$Form.Controls.Add($script:BtnAcao)
+$Form.AcceptButton = $script:BtnAcao
+
+# Caminho de saida sempre visivel; some so enquanto a instalacao roda.
+$script:BtnFechar = New-Object System.Windows.Forms.Button
+$script:BtnFechar.Text      = "Fechar"
+$script:BtnFechar.Font      = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+$script:BtnFechar.Size      = New-Object System.Drawing.Size(120, 50)
+$script:BtnFechar.Location  = New-Object System.Drawing.Point(($LARG - 386), 372)
+$script:BtnFechar.FlatStyle = "Flat"
+$script:BtnFechar.FlatAppearance.BorderSize = 0
+$script:BtnFechar.BackColor = $script:CorGrafite
+$script:BtnFechar.ForeColor = [System.Drawing.Color]::White
+$Form.Controls.Add($script:BtnFechar)
+
+$script:BtnFechar.Add_Click({
+    if (-not $script:PodeFechar) { return }
+    $script:Concluido = $true
+    $script:Form.Close()
+})
+
+# ============================================================ LOGICA
+function Set-Etapa {
+    param([string]$Texto, [int]$Passo, $Cor = $null)
+    if ($null -eq $Cor) { $Cor = $script:CorGrafite }
+    $script:Msg.ForeColor = $Cor
+    $script:Msg.Text      = $Texto
+    if ($Passo -ge 0) { $script:Barra.Value = [Math]::Min($Passo, $script:Barra.Maximum) }
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+$script:BtnAcao.Add_Click({
+    if ($script:Concluido) { $script:Form.Close(); return }
+
+    $ramal = $script:TxtRamal.Text.Trim()
+    $senha = $script:TxtSenha.Text.Trim()
+
+    if (-not $ramal) { Set-Etapa "Informe o ramal." (-1) $script:CorVinho; $script:TxtRamal.Focus(); return }
+    if (-not $senha) { Set-Etapa "Informe a senha do ramal." (-1) $script:CorVinho; $script:TxtSenha.Focus(); return }
+
+    $script:PodeFechar        = $false
+    $script:BtnAcao.Enabled   = $false
+    $script:BtnAcao.BackColor = $script:CorCinza
+    $script:BtnAcao.Text      = "Aguarde..."
+    $script:BtnFechar.Enabled = $false
+    $script:TxtRamal.Enabled  = $false
+    $script:TxtSenha.Enabled  = $false
 
     try {
-        # Remove tarefa antiga com o mesmo nome, se existir (idempotente)
-        schtasks /Delete /TN $nomeTarefa /F 2>$null | Out-Null
+        # ==================================================================
+        # CAMINHO "JA INSTALADO"  <-- mexa aqui se quiser mudar esse fluxo
+        # Se o GOnnect ja existe na maquina, NAO baixa e NAO reinstala:
+        # a tela e a mesma e o script segue direto para regravar o
+        # 01-sip.conf / 99-user.conf com o ramal informado.
+        # Para forcar reinstalacao sempre, troque a condicao do if por
+        # $false. Para nem tentar instalar, troque por $true.
+        # ==================================================================
+        Set-Etapa "Verificando se o GOnnect ja esta instalado..." 1
+        if ((Test-GOnnectInstalado) -and (Test-Path -LiteralPath $script:ExeGOnnect)) {
+            Set-Etapa "GOnnect ja instalado. Apenas atualizando o ramal." 2
+        }
+        else {
+            Set-Etapa "Procurando a ultima versao com instalador win64..." 1
+            $script:BtnAcao.Text = "Aguarde..."
+            $tag = Install-GOnnect
+            Set-Etapa "Versao $tag instalada para todos os usuarios." 2
+        }
 
-        # Cria a tarefa para rodar AGORA (ST = daqui 1 minuto), no contexto
-        # do usuario logado, usando token interativo (nao pede senha)
-        $horaExec = (Get-Date).AddMinutes(1).ToString("HH:mm")
+        Set-Etapa "Conferindo atalhos e inicializacao automatica..." 3
+        New-AtalhosGOnnect
 
-        schtasks /Create /TN $nomeTarefa /TR $comando /SC ONCE /ST $horaExec `
-                 /RU $NomeUsuario /IT /F | Out-Null
+        Set-Etapa "Gravando o ramal no perfil de $($script:UsuarioAlvo.NomeUsuario)..." 4
+        Write-ConfiguracaoRamal -LocalAppDataUsuario $script:UsuarioAlvo.LocalAppData `
+                                -Ramal $ramal -Senha $senha
 
-        schtasks /Run /TN $nomeTarefa | Out-Null
+        # Tenta subir na sessao do usuario final (tarefa /IT). Se nao subir,
+        # cai para Start-Process direto - o GOnnect precisa ficar aberto.
+        Set-Etapa "Iniciando o GOnnect..." 5
+        try {
+            Start-ProcessoNaSessaoDoUsuario -NomeUsuario $script:UsuarioAlvo.NomeCompleto `
+                                            -CaminhoExe $script:ExeGOnnect
+        }
+        catch { }
 
-        # Aguarda um instante para o processo subir antes de limpar a tarefa
-        Start-Sleep -Seconds 5
-        schtasks /Delete /TN $nomeTarefa /F 2>$null | Out-Null
+        if (-not (Get-Process -Name "gonnect" -ErrorAction SilentlyContinue)) {
+            try {
+                Start-Process -FilePath $script:ExeGOnnect `
+                              -WorkingDirectory $script:PastaExe -WindowStyle Hidden
+                Start-Sleep -Seconds 3
+            }
+            catch { }
+        }
 
-        Write-Host "GOnnect iniciado na sessao de $NomeUsuario." -ForegroundColor Green
+        if (-not (Get-Process -Name "gonnect" -ErrorAction SilentlyContinue)) {
+            Set-Etapa "Configurado. O GOnnect abrira no proximo login do usuario." 5 $script:CorAmbar
+            Start-Sleep -Milliseconds 1200
+        }
+
+        $script:Concluido  = $true
+        $script:PodeFechar = $true
+        Set-Etapa "Ramal $ramal configurado para $($script:UsuarioAlvo.NomeUsuario)." 6 $script:CorVerde
+        $script:BtnAcao.Text      = "Concluido"
+        $script:BtnFechar.Enabled = $true
+
+        for ($i = 0; $i -lt 25; $i++) {
+            Start-Sleep -Milliseconds 100
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+        $script:Form.Close()
     }
     catch {
-        Write-Host "Nao foi possivel iniciar o GOnnect na sessao do usuario automaticamente." -ForegroundColor Yellow
-        Write-Host "O atalho de Startup ja criado vai iniciar o programa no proximo login." -ForegroundColor Yellow
-        Write-Host "Detalhe do erro: $($_.Exception.Message)" -ForegroundColor DarkGray
+        $script:PodeFechar        = $true
+        Set-Etapa "Falha: $($_.Exception.Message)" (-1) $script:CorVinho
+        $script:TxtRamal.Enabled  = $true
+        $script:TxtSenha.Enabled  = $true
+        $script:BtnAcao.Enabled   = $true
+        $script:BtnAcao.BackColor = $script:CorAzul
+        $script:BtnAcao.Text      = "Tentar novamente"
+        $script:BtnFechar.Enabled = $true
     }
-}
+})
 
-# ==========================================================================
-# FLUXO PRINCIPAL: Instalacao (se necessario) + Configuracao do Ramal
-# ==========================================================================
+$Form.Add_Shown({
+    try {
+        $script:UsuarioAlvo = Get-UsuarioLogadoInfo
+        $script:Contexto.Text         = "$env:COMPUTERNAME"
+        $script:ContextoUsuario.Text  = "$($script:UsuarioAlvo.NomeCompleto)"
+        $script:LblPerfil.Text = "Perfil de destino: $($script:UsuarioAlvo.PerfilPath)"
 
-$resposta = Read-Host "Deseja instalar o SIP (Ramal)? [S/N]"
-
-if ($resposta -match "^[Ss]") {
-    Write-Host "--- Iniciando processo do GOnnect (SIP) ---" -ForegroundColor Cyan
-
-    # VERIFICAR SE JA ESTA INSTALADO
-    Write-Host "Verificando se o GOnnect ja esta instalado..."
-    $jaInstalado = Get-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-                   Where-Object { $_.DisplayName -like "*GOnnect*" }
-
-    if ($jaInstalado) {
-        Write-Host "GOnnect ja esta instalado nesta maquina. Pulando instalacao." -ForegroundColor Green
-    }
-    else {
-        Write-Host "Buscando a versao mais recente no GitHub..." -ForegroundColor Yellow
-        try {
-            # CONSULTAR A API DO GITHUB
-            $urlApi = "https://api.github.com/repos/gonicus/gonnect/releases/latest"
-            $respostaApi = Invoke-RestMethod -Uri $urlApi -UseBasicParsing -ErrorAction Stop
-
-            $assetValido = $respostaApi.assets | Where-Object { $_.name -like "*win64.exe" } | Select-Object -First 1
-
-            if (-not $assetValido) {
-                Write-Host "Erro: Nao foi possivel localizar o arquivo win64.exe no GitHub." -ForegroundColor Red
-                return
-            }
-            $urlDownload = $assetValido.browser_download_url
-            $nomeDoArquivo = $assetValido.name
-            $destinoLocal = "$env:TEMP\$nomeDoArquivo"
-
-            # DOWNLOAD
-            Write-Host "Baixando $nomeDoArquivo..." -ForegroundColor Cyan
-            Invoke-WebRequest -Uri $urlDownload -OutFile $destinoLocal -UseBasicParsing -ErrorAction Stop
-
-            # INSTALACAO SILENCIOSA (ALL USERS)
-            Write-Host "Iniciando instalacao silenciosa para todos os usuarios..." -ForegroundColor Green
-            Start-Process -FilePath $destinoLocal -ArgumentList "/S" -Wait -NoNewWindow
-
-            # CONFIGURAR INICIALIZACAO AUTOMATICA E ATALHOS (MAQUINA TODA)
-            $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
-            $pastaTrabalho = "C:\Program Files\GOnnect\bin"
-
-            if (Test-Path -LiteralPath $caminhoExeGonnect) {
-                Write-Host "Criando atalhos na Area de Trabalho e na pasta de Inicializacao..." -ForegroundColor Yellow
-
-                $WshShell = New-Object -ComObject WScript.Shell
-
-                # Criar Atalho na pasta Startup
-                $caminhoStartup = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\GOnnect.lnk"
-                $AtalhoStartup = $WshShell.CreateShortcut($caminhoStartup)
-                $AtalhoStartup.TargetPath = $caminhoExeGonnect
-                $AtalhoStartup.WorkingDirectory = $pastaTrabalho
-                $AtalhoStartup.Save()
-
-                # Criar Atalho na Área de Trabalho
-                $caminhoDesktop = "$env:Public\Desktop\GOnnect.lnk"
-                $AtalhoDesktop = $WshShell.CreateShortcut($caminhoDesktop)
-                $AtalhoDesktop.TargetPath = $caminhoExeGonnect
-                $AtalhoDesktop.WorkingDirectory = $pastaTrabalho
-                $AtalhoDesktop.Save()
-
-                Write-Host "Atalhos e inicializacao automatica configurados com sucesso!" -ForegroundColor Green
-            } else {
-                Write-Host "Aviso: O executavel nao foi encontrado no caminho ($caminhoExeGonnect). Inicializacao automatica e atalho nao configurados." -ForegroundColor DarkGray
-            }
-
-            # LIMPEZA
-            Write-Host "Limpando arquivo temporario..." -ForegroundColor Yellow
-            Remove-Item -Path $destinoLocal -Force
-
-            Write-Host "Instalacao concluida com sucesso!" -ForegroundColor Green
+        # Mesma tela nos dois casos: so muda o texto do botao e do aviso.
+        if ((Test-GOnnectInstalado) -and (Test-Path -LiteralPath $script:ExeGOnnect)) {
+            $script:BtnAcao.Text = "Atualizar ramal"
+            Set-Etapa "GOnnect ja instalado: o ramal informado sera apenas regravado." 0 $script:CorGrafite
         }
-        catch {
-            Write-Host "Erro durante o processo do GOnnect: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "--------------------------------------------------------"
-            return
-        }
+
+        $script:TxtRamal.Focus()
     }
-
-    # ACOPLA A CONFIGURACAO DO RAMAL LOGO APOS GARANTIR A INSTALACAO
-    $caminhoExeGonnect = "C:\Program Files\GOnnect\bin\gonnect.exe"
-    $pastaTrabalho = "C:\Program Files\GOnnect\bin"
-    if (Test-Path -LiteralPath $caminhoExeGonnect) {
-        Write-Host "Abrindo tela de configuracao do Ramal..." -ForegroundColor Cyan
-        Show-ConfiguracaoRamal -LocalAppDataUsuario $UsuarioAlvo.LocalAppData
-
-        # INICIA O GONNECT NA SESSAO DO USUARIO FINAL (nao na do admin)
-        Write-Host "Iniciando o GOnnect na sessao do usuario final..." -ForegroundColor Green
-        Start-ProcessoNaSessaoDoUsuario -NomeUsuario $UsuarioAlvo.NomeCompleto `
-                                        -CaminhoExe $caminhoExeGonnect `
-                                        -PastaTrabalho $pastaTrabalho
-
-    } else {
-        Write-Host "GOnnect nao foi encontrado apos a instalacao. Configuracao do Ramal nao sera exibida." -ForegroundColor Red
+    catch {
+        # Sem usuario final identificado nao ha o que configurar: unico
+        # caminho de saida vira o botao Fechar.
+        Set-Etapa "$($_.Exception.Message)" (-1) $script:CorVinho
+        $script:LblPerfil.Text    = "Faca login com o usuario final na maquina e rode de novo."
+        $script:TxtRamal.Enabled  = $false
+        $script:TxtSenha.Enabled  = $false
+        $script:Concluido         = $true
+        $script:PodeFechar        = $true
+        $script:BtnAcao.Text      = "Fechar"
+        $script:BtnAcao.BackColor = $script:CorGrafite
     }
-}
-else {
-    Write-Host "Instalacao do SIP (Ramal) pulada pelo usuario." -ForegroundColor Yellow
-}
+})
 
-Write-Host "--------------------------------------------------------"
+$Form.ShowDialog() | Out-Null
+$Form.Dispose()
