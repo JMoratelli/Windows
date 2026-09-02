@@ -381,7 +381,7 @@ $PrinterRows = New-Object System.Collections.ArrayList
 function Add-PrinterRow {
     $g = New-Object Windows.Controls.Grid
     $g.Margin = "0,0,0,8"
-    foreach ($w in @("120","*","Auto")) {
+    foreach ($w in @("120","*","Auto","Auto")) {
         $c = New-Object Windows.Controls.ColumnDefinition
         $c.Width = $w
         $g.ColumnDefinitions.Add($c)
@@ -395,13 +395,58 @@ function Add-PrinterRow {
     $rm = New-Object Windows.Controls.Button
     $rm.Content="x"; $rm.Width=30; $rm.Height=30; $rm.Background="#E4E8EC"; $rm.BorderThickness=0
     $rm.Cursor="Hand"; $rm.ToolTip="Remover"
+    $ok = New-Object Windows.Controls.Button
+    $ok.Content=[char]0x2713; $ok.Width=30; $ok.Height=30; $ok.Margin="0,0,6,0"
+    $ok.Background="#1A5FB4"; $ok.Foreground="White"; $ok.BorderThickness=0
+    $ok.Cursor="Hand"; $ok.ToolTip="Validar e adicionar a fila"
 
     [Windows.Controls.Grid]::SetColumn($ip,0)
     [Windows.Controls.Grid]::SetColumn($nm,1)
-    [Windows.Controls.Grid]::SetColumn($rm,2)
-    $g.Children.Add($ip)|Out-Null; $g.Children.Add($nm)|Out-Null; $g.Children.Add($rm)|Out-Null
+    [Windows.Controls.Grid]::SetColumn($ok,2)
+    [Windows.Controls.Grid]::SetColumn($rm,3)
+    $g.Children.Add($ip)|Out-Null; $g.Children.Add($nm)|Out-Null
+    $g.Children.Add($ok)|Out-Null; $g.Children.Add($rm)|Out-Null
 
-    $entry = [pscustomobject]@{ Grid=$g; Ip=$ip; Nome=$nm }
+    $entry = [pscustomobject]@{ Grid=$g; Ip=$ip; Nome=$nm; Validado=$false }
+
+    # O "visto" e o unico caminho para a fila: sem ele a linha e ignorada
+    $ok.Add_Click({
+        $vIp = $ip.Text.Trim()
+        $vNm = $nm.Text.Trim().ToUpper()
+        $ip.BorderBrush = "#ABADB3"; $nm.BorderBrush = "#ABADB3"
+
+        if ($vIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
+            $ip.BorderBrush = "#C01C28"
+            Write-Log "IP invalido: '$vIp'" "#F87171"
+            $ip.Focus() | Out-Null
+            return
+        }
+        if ($vNm -notmatch '(?i)^KY-([^-]+)-(ATAC|LJ\d{2})$') {
+            $nm.BorderBrush = "#C01C28"
+            Write-Log "Nome fora do padrao: use KY-AREA-ATAC ou KY-AREA-LJxx." "#F87171"
+            $nm.Focus() | Out-Null
+            return
+        }
+        foreach ($outro in $PrinterRows) {
+            if ($outro -eq $entry) { continue }
+            if (-not $outro.Validado) { continue }
+            if ($outro.Ip.Text.Trim() -eq $vIp) {
+                $ip.BorderBrush = "#C01C28"; Write-Log "IP $vIp ja esta na fila." "#F87171"; return
+            }
+            if ($outro.Nome.Text.Trim().ToUpper() -eq $vNm) {
+                $nm.BorderBrush = "#C01C28"; Write-Log "Nome $vNm ja esta na fila." "#F87171"; return
+            }
+        }
+
+        $nm.Text = $vNm
+        $ip.IsReadOnly = $true; $nm.IsReadOnly = $true
+        $ip.Background = "#EDEFF2"; $nm.Background = "#EDEFF2"
+        $ip.BorderBrush = "#0A6F66"; $nm.BorderBrush = "#0A6F66"
+        $ok.Visibility = "Collapsed"
+        $entry.Validado = $true
+        Write-Log "$vNm ($vIp) validada e na fila." "#22C55E"
+    }.GetNewClosure())
+
     $rm.Add_Click({
         $PrintersPanel.Children.Remove($g)
         $PrinterRows.Remove($entry)
@@ -413,7 +458,7 @@ function Add-PrinterRow {
 }
 
 $hdr = New-Object Windows.Controls.Grid
-foreach ($w in @("120","*","Auto")) {
+foreach ($w in @("120","*","Auto","Auto")) {
     $c = New-Object Windows.Controls.ColumnDefinition; $c.Width = $w; $hdr.ColumnDefinitions.Add($c)
 }
 $h1 = New-Object Windows.Controls.TextBlock; $h1.Text="IP";   $h1.FontSize=11; $h1.Foreground="#6B7580"
@@ -924,12 +969,17 @@ $BtnRun.Add_Click({
 
     $printers = @()
     if ($Checks['impressoras'].IsChecked) {
+        $pendentes = 0
         foreach ($r in $PrinterRows) {
             $ip = $r.Ip.Text.Trim(); $nm = $r.Nome.Text.Trim()
             if (-not $ip -and -not $nm) { continue }
-            if ($ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { Write-Log "IP invalido: '$ip'" "#F59E0B"; return }
-            if (-not $nm) { Write-Log "Falta o nome da impressora $ip." "#F59E0B"; return }
+            # So entra na fila o que passou pelo "visto"
+            if (-not $r.Validado) { $pendentes++; continue }
             $printers += ,@{ Ip=$ip; Nome=$nm }
+        }
+        if ($pendentes -gt 0) {
+            Write-Log "$pendentes impressora(s) sem validar - clique no visto ou remova a linha." "#F59E0B"
+            return
         }
         if ($printers.Count -eq 0) {
             Write-Log "Adicione ao menos uma impressora ou desmarque a tarefa." "#F59E0B"
@@ -939,6 +989,12 @@ $BtnRun.Add_Click({
 
     $sync.Jobs = $jobs
     $sync.Printers = $printers
+
+    # Comecou: nada de mexer nas opcoes no meio do caminho
+    $Checks['gonnect'].IsEnabled     = $false
+    $Checks['impressoras'].IsEnabled = $false
+    $BtnAddPrinter.IsEnabled = $false
+    $PrintersPanel.IsEnabled = $false
 
     $BtnRun.IsEnabled = $false
     $BtnRun.Content = "Preparando..."
