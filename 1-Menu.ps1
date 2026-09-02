@@ -5,14 +5,17 @@
     Adaptado para o padrao visual Machadao Corp.
 #>
 
-# ============================================================ CONSOLE OCULTO
+# ============================================================ CONSOLE MINIMIZADO
+# NAO esconder a janela (ShowWindow(hWnd, 0)): scripts que usam rundll32
+# printui.dll travam se a janela do processo pai nao existir.
+# Minimizar (6) deixa a janela fora do caminho sem remove-la.
 Add-Type -Namespace Nativo -Name Janela -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
 [DllImport("user32.dll")]   public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
 '@ -ErrorAction SilentlyContinue
 try {
     $h = [Nativo.Janela]::GetConsoleWindow()
-    if ($h -ne [System.IntPtr]::Zero) { [Nativo.Janela]::ShowWindow($h, 0) | Out-Null }
+    if ($h -ne [System.IntPtr]::Zero) { [Nativo.Janela]::ShowWindow($h, 6) | Out-Null }   # 6 = SW_MINIMIZE
 }
 catch { }
 
@@ -195,29 +198,41 @@ $script:btnAcao.Add_Click({
     [System.Windows.Forms.Application]::DoEvents()
 
     $comandoRemoto = "irm '$($itemSelecionado.Url)' | iex"
+    # Sem -NoExit: com a janela oculta, ela ficaria pendurada pra sempre depois
+    # que o script terminasse, acumulando processos powershell.exe invisiveis.
     $argumentos = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-NoExit",
+        "-WindowStyle", "Hidden",
         "-Command", $comandoRemoto
     )
 
+    # TopMost atrapalha scripts que abrem janela propria - abaixa enquanto
+    # dispara e restaura depois.
+    $topMostAnterior = $script:Form.TopMost
+    $script:Form.TopMost = $false
+
     try {
-        # O -Wait foi removido para liberar a interface na mesma hora
+        # O -Wait foi removido para liberar a interface na mesma hora.
+        # -WindowStyle Hidden vai tanto no argumento do powershell quanto no
+        # Start-Process: sem os dois o console pisca antes de sumir.
         if (Test-IsAdmin) {
-            Start-Process -FilePath "powershell.exe" -ArgumentList $argumentos
+            Start-Process -FilePath "powershell.exe" -ArgumentList $argumentos -WindowStyle Hidden
         }
         else {
-            Start-Process -FilePath "powershell.exe" -ArgumentList $argumentos -Verb RunAs
+            Start-Process -FilePath "powershell.exe" -ArgumentList $argumentos -Verb RunAs -WindowStyle Hidden
         }
-        
+
         Start-Sleep -Milliseconds 400
         $script:msg.ForeColor = $script:corVerde
-        $script:msg.Text = "O script foi aberto em uma nova janela! O painel está liberado."
+        $script:msg.Text = "O script foi disparado em segundo plano. O painel está liberado."
     }
     catch {
         $script:msg.ForeColor = $script:corVinho
         $script:msg.Text = "Erro: $($_.Exception.Message)"
+    }
+    finally {
+        $script:Form.TopMost = $topMostAnterior
     }
 
     $script:btnAcao.Enabled = $true
