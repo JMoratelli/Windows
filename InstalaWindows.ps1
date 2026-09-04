@@ -570,6 +570,11 @@ Write-Log "Clique em Preparar estacao para comecar." "#7C93AE"
 # ---------------------------------------------------------------- WORKER
 $worker = {
 
+  # Tudo dentro de try/finally: se qualquer coisa estourar fora do loop de jobs,
+  # o $sync.Done ainda vira $true e a janela consegue fechar.
+  $totalFalhas = 0
+  try {
+
     function W([string]$m, [string]$hex = "#CBD5E1") {
         $sync.Win.Dispatcher.Invoke([action]{
             $p = New-Object Windows.Documents.Paragraph
@@ -629,6 +634,42 @@ $worker = {
         return $false
     }
 
+    # TCP com timeout proprio: o Test-NetConnection padrao demora demais
+    function Test-Porta([string]$ip, [int]$porta, [int]$ms) {
+        $c = New-Object System.Net.Sockets.TcpClient
+        try {
+            $ar = $c.BeginConnect($ip, $porta, $null, $null)
+            if (-not $ar.AsyncWaitHandle.WaitOne($ms, $false)) { return $false }
+            $c.EndConnect($ar)
+            return $true
+        }
+        catch { return $false }
+        finally { $c.Close() }
+    }
+
+    # SNMP com retry e timeout: sem isso o COM pendura o worker inteiro
+    function Get-ModeloSnmp([string]$ip) {
+        $snmp = $null
+        try {
+            $snmp = New-Object -ComObject olePrn.OleSNMP
+            $snmp.Open($ip, "public", 2, 2000)      # 2 tentativas, 2 s cada
+            foreach ($oid in @('.1.3.6.1.2.1.25.3.2.1.3.1', '.1.3.6.1.2.1.1.1.0')) {
+                try {
+                    $v = $snmp.Get($oid)
+                    if ($v) { return ([string]$v).Trim() }
+                }
+                catch { }
+            }
+            return $null
+        }
+        finally {
+            if ($snmp) {
+                try { $snmp.Close() } catch { }
+                [void][Runtime.InteropServices.Marshal]::ReleaseComObject($snmp)
+            }
+        }
+    }
+
     # winget com tratamento de "ja instalado" e fallback de escopo
     function Wg([string]$pkg, [string]$Confere, [switch]$SemEscopoSeFalhar) {
         if ($Confere -and (TemNoRegistro $Confere)) {
@@ -665,7 +706,7 @@ $worker = {
 
     $total = $sync.Jobs.Count
     $i = 0
-    $totalFalhas = 0
+    $falhasImp = 0
 
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Prog 0 "Atualizando fontes do winget..."
@@ -822,127 +863,186 @@ $worker = {
 
                 'impressoras' {
                     $TempDir = "C:\KyoceraDrivers"
-                    if (!(Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+                    if (-not (Test-Path -LiteralPath $TempDir)) {
+                        New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
+                    }
 
-                    $Infs = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse -ErrorAction SilentlyContinue
+                    # ------------------------------------- pacote de drivers
+                    $Infs = @(Get-ChildItem -LiteralPath $TempDir -Filter "OEMSETUP.INF" -Recurse -ErrorAction SilentlyContinue)
 
-                    if (-not $Infs) {
-                        # Preferimos .zip: o Expand-Archive e nativo e nao depende do 7-Zip
-                        $zip  = "$TempDir\drivers.zip"
-                        $sete = "$TempDir\drivers.7z"
-                        $usouZip = $false
+                    if ($Infs.Count -eq 0) {
+                        $zip  = Join-Path $TempDir "drivers.zip"
+                        $sete = Join-Path $TempDir "drivers.7z"
 
-                        if (-not (Test-Path $zip) -and -not (Test-Path $sete)) {
+                        if (-not (Test-Path -LiteralPath $zip) -and -not (Test-Path -LiteralPath $sete)) {
                             try {
                                 W "   baixando KyoceraDrivers.zip..."
-                                Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.zip" -OutFile $zip -ErrorAction Stop
-                                $usouZip = $true
+                                Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.zip" `
+                                    -OutFile $zip -UseBasicParsing -TimeoutSec 900 -ErrorAction Stop
                             }
                             catch {
-                                W "   zip nao encontrado no servidor, tentando o 7z..." "#93A5B8"
-                                Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.7z" -OutFile $sete -ErrorAction Stop
+                                # apaga o parcial, senao o Test-Path abaixo acha que veio inteiro
+                                Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+                                W "   zip indisponivel, tentando o 7z..." "#93A5B8"
+                                try {
+                                    Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.7z" `
+                                        -OutFile $sete -UseBasicParsing -TimeoutSec 900 -ErrorAction Stop
+                                }
+                                catch {
+                                    Remove-Item -LiteralPath $sete -Force -ErrorAction SilentlyContinue
+                                    throw "nao foi possivel baixar o pacote de drivers do servidor"
+                                }
                             }
                         }
 
-                        if (Test-Path $zip) { $usouZip = $true }
-
-                        if ($usouZip) {
-                            W "   extraindo com Expand-Archive..."
+                        if (Test-Path -LiteralPath $zip) {
+                            W "   extraindo com Expand-Archive (pode demorar)..."
                             Expand-Archive -LiteralPath $zip -DestinationPath $TempDir -Force -ErrorAction Stop
                         }
                         else {
-                            W "   extraindo com 7-Zip..."
                             $sevenZip = "C:\Program Files\7-Zip\7z.exe"
-                            if (-not (Test-Path $sevenZip)) {
+                            if (-not (Test-Path -LiteralPath $sevenZip)) {
                                 throw "pacote em .7z e o 7-Zip nao esta instalado nesta maquina"
                             }
+                            W "   extraindo com 7-Zip..."
                             & $sevenZip x $sete "-o$TempDir" -y | Out-Null
+                            if ($LASTEXITCODE -ne 0) { throw "7-Zip retornou $LASTEXITCODE" }
                         }
 
-                        $Infs = Get-ChildItem -Path $TempDir -Filter "OEMSETUP.INF" -Recurse
+                        $Infs = @(Get-ChildItem -LiteralPath $TempDir -Filter "OEMSETUP.INF" -Recurse)
                     }
 
-                    if (-not $Infs) { throw "nenhum OEMSETUP.INF apos a extracao" }
+                    if ($Infs.Count -eq 0) { throw "nenhum OEMSETUP.INF apos a extracao" }
 
+                    # ------------------------------------- indice driver -> INF, uma unica vez
+                    W "   indexando $($Infs.Count) arquivo(s) INF..."
+                    $mapa = New-Object System.Collections.Generic.List[object]
+                    foreach ($f in $Infs) {
+                        foreach ($line in [System.IO.File]::ReadLines($f.FullName)) {
+                            if ($line -match '^\s*"([^"]+)"\s*=\s*([^,]+)') {
+                                $mapa.Add([pscustomobject]@{
+                                    Driver = $Matches[1].Trim()
+                                    Secao  = $Matches[2].Trim()
+                                    Inf    = $f.FullName
+                                })
+                            }
+                        }
+                    }
+                    if ($mapa.Count -eq 0) { throw "nenhum modelo reconhecido nos INF" }
+                    W "   $($mapa.Count) modelos disponiveis no pacote."
+
+                    # ------------------------------------- uma impressora por vez
                     foreach ($p in $sync.Printers) {
                         W ""
                         W "   [$($p.Ip)] $($p.Nome)" "#93A5B8"
+
+                        if (Get-Printer -Name $p.Nome -ErrorAction SilentlyContinue) {
+                            Skip "$($p.Nome) ja existe nesta maquina"
+                            continue
+                        }
+
                         try {
-                            $snmp = New-Object -ComObject olePrn.OleSNMP
-                            $snmp.Open($p.Ip, "public")
-                            $modelo = $snmp.Get(".1.3.6.1.2.1.25.3.2.1.3.1")
-                            $snmp.Close()
+                            if (-not (Test-Porta $p.Ip 9100 1500)) {
+                                throw "sem resposta em $($p.Ip):9100 - desligada ou IP errado"
+                            }
+
+                            $modelo = Get-ModeloSnmp $p.Ip
                             if (-not $modelo) { throw "sem resposta SNMP" }
                             W "   hardware: $modelo"
 
-                            $core = ($modelo -split ' ' | Where-Object { $_ -match '\d' } | Select-Object -First 1)
+                            $core = ($modelo -split '[\s,]+' | Where-Object { $_ -match '\d' } | Select-Object -First 1)
                             if (-not $core) { $core = $modelo }
 
-                            $InfPath = $null; $DriverName = $null
-                            foreach ($f in $Infs) {
-                                foreach ($line in (Get-Content $f.FullName)) {
-                                    if ($line -match '^"([^"]+)"\s*=\s*([^,]+)') {
-                                        $d = $Matches[1].Trim(); $s = $Matches[2].Trim()
-                                        if ($d -like "*$core*" -or $s -like "*$core*") {
-                                            $DriverName = $d; $InfPath = $f.FullName; break
-                                        }
+                            $achado = $mapa |
+                                      Where-Object { $_.Driver -like "*$core*" -or $_.Secao -like "*$core*" } |
+                                      Select-Object -First 1
+                            if (-not $achado) { throw "driver para '$core' nao localizado no pacote" }
+
+                            $DriverName = $achado.Driver
+                            $InfPath    = $achado.Inf
+                            W "   driver: $DriverName"
+
+                            # confia no .cat para o pnputil nao pedir confirmacao na tela
+                            try {
+                                $cat = Get-ChildItem -LiteralPath (Split-Path $InfPath) -Filter "*.cat" -ErrorAction Stop |
+                                       Select-Object -First 1
+                                if ($cat) {
+                                    $cert = (Get-AuthenticodeSignature $cat.FullName).SignerCertificate
+                                    if ($cert) {
+                                        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher","LocalMachine")
+                                        $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
                                     }
                                 }
-                                if ($DriverName) { break }
                             }
-                            if (-not $DriverName) { throw "driver para '$core' nao localizado no INF" }
-                            W "   driver: $DriverName"
+                            catch { W "   aviso: .cat nao pode ser confiado - $($_.Exception.Message)" "#F59E0B" }
+
+                            # driver no store + publicacao, tudo sem interface grafica
+                            if (-not (Get-PrinterDriver -Name $DriverName -ErrorAction SilentlyContinue)) {
+                                W "   instalando driver no sistema..."
+                                & pnputil.exe /add-driver "$InfPath" /install 2>&1 | Out-Null
+                                if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 259) {
+                                    throw "pnputil retornou $LASTEXITCODE"
+                                }
+                                Add-PrinterDriver -Name $DriverName -ErrorAction Stop
+                            }
 
                             $Port = "IP_$($p.Ip)"
                             if (-not (Get-PrinterPort -Name $Port -ErrorAction SilentlyContinue)) {
                                 Add-PrinterPort -Name $Port -PrinterHostAddress $p.Ip -ErrorAction Stop
                             }
 
-                            $cat = Get-ChildItem -Path (Split-Path $InfPath) -Filter "*.cat" | Select-Object -First 1
-                            if ($cat) {
-                                $cert = (Get-AuthenticodeSignature $cat.FullName).SignerCertificate
-                                if ($cert) {
-                                    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher","LocalMachine")
-                                    $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
-                                }
-                            }
-
-                            pnputil.exe /add-driver $InfPath | Out-Null
-
-                            $printUiArgs = "printui.dll,PrintUIEntry /ia /m `"$DriverName`" /f `"$InfPath`""
-                            $proc = Start-Process rundll32.exe -ArgumentList $printUiArgs -Wait -PassThru -WindowStyle Hidden
-                            if ($proc.ExitCode -ne 0) { throw "PrintUI retornou $($proc.ExitCode)" }
-
                             Add-Printer -Name $p.Nome -DriverName $DriverName -PortName $Port -ErrorAction Stop
+                            Ok "$($p.Nome) criada"
 
-                            $cfg = Get-PrintConfiguration -PrinterName $p.Nome
-                            [xml]$ticket = $cfg.PrintTicketXML
-                            $nsm = New-Object System.Xml.XmlNamespaceManager($ticket.NameTable)
-                            $nsm.AddNamespace("psf","http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework")
+                            # bandeja e papel: se falhar, a impressora ja esta usavel
+                            try {
+                                $cfg = Get-PrintConfiguration -PrinterName $p.Nome -ErrorAction Stop
+                                [xml]$ticket = $cfg.PrintTicketXML
+                                $nsm = New-Object System.Xml.XmlNamespaceManager($ticket.NameTable)
+                                $nsm.AddNamespace("psf","http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework")
 
-                            $bin = $ticket.SelectSingleNode("//psf:Feature[@name='psk:PageInputBin']/psf:Option",$nsm)
-                            if ($bin) { $bin.SetAttribute("name","psk:Cassette") }
-                            else {
-                                $fr = $ticket.CreateDocumentFragment()
-                                $fr.InnerXml = '<psf:Feature name="psk:PageInputBin"><psf:Option name="psk:Cassette" /></psf:Feature>'
-                                $ticket.DocumentElement.AppendChild($fr) | Out-Null
+                                $bin = $ticket.SelectSingleNode("//psf:Feature[@name='psk:PageInputBin']/psf:Option",$nsm)
+                                if ($bin) { $bin.SetAttribute("name","psk:Cassette") }
+                                else {
+                                    $fr = $ticket.CreateDocumentFragment()
+                                    $fr.InnerXml = '<psf:Feature name="psk:PageInputBin"><psf:Option name="psk:Cassette" /></psf:Feature>'
+                                    $ticket.DocumentElement.AppendChild($fr) | Out-Null
+                                }
+                                $md = $ticket.SelectSingleNode("//psf:Feature[@name='psk:PageMediaType']/psf:Option",$nsm)
+                                if ($md) { $md.SetAttribute("name","psk:Plain") }
+                                else {
+                                    $fr = $ticket.CreateDocumentFragment()
+                                    $fr.InnerXml = '<psf:Feature name="psk:PageMediaType"><psf:Option name="psk:Plain" /></psf:Feature>'
+                                    $ticket.DocumentElement.AppendChild($fr) | Out-Null
+                                }
+                                Set-PrintConfiguration -PrinterName $p.Nome -PrintTicketXML $ticket.OuterXml -ErrorAction Stop
+                                W "   bandeja e tipo de papel ajustados."
                             }
-                            $md = $ticket.SelectSingleNode("//psf:Feature[@name='psk:PageMediaType']/psf:Option",$nsm)
-                            if ($md) { $md.SetAttribute("name","psk:Plain") }
-                            else {
-                                $fr = $ticket.CreateDocumentFragment()
-                                $fr.InnerXml = '<psf:Feature name="psk:PageMediaType"><psf:Option name="psk:Plain" /></psf:Feature>'
-                                $ticket.DocumentElement.AppendChild($fr) | Out-Null
-                            }
-                            Set-PrintConfiguration -PrinterName $p.Nome -PrintTicketXML $ticket.OuterXml -ErrorAction Stop
-
-                            Ok "$($p.Nome) configurada"
+                            catch { W "   aviso: preferencias nao aplicadas - $($_.Exception.Message)" "#F59E0B" }
                         }
-                        catch { Err "[$($p.Ip)] $($_.Exception.Message)" }
+                        catch {
+                            Err "[$($p.Ip)] $($_.Exception.Message)"
+                            $falhasImp++
+                        }
+                    }
+
+                    $qtdImp = @($sync.Printers).Count
+                    if ($falhasImp -gt 0 -and $falhasImp -eq $qtdImp) {
+                        throw "nenhuma das $qtdImp impressoras foi configurada"
+                    }
+                    if ($falhasImp -gt 0) {
+                        W ""
+                        W "   $falhasImp de $qtdImp impressoras falharam." "#F59E0B"
+                        $totalFalhas += $falhasImp
                     }
                 }
             }
-            St $job.Id "concluido" "#0A6F66"
+
+            if ($job.Id -eq 'impressoras' -and $falhasImp -gt 0) {
+                St $job.Id "$falhasImp falha(s)" "#8A5A00"
+            } else {
+                St $job.Id "concluido" "#0A6F66"
+            }
         }
         catch {
             Err $_.Exception.Message
@@ -957,8 +1057,16 @@ $worker = {
     else { W "Concluido com $totalFalhas item(ns) com falha. Verifique o log acima." "#F59E0B" }
     W "Desenvolvido por @JJMoratelli" "#7C93AE"
 
-    $sync.Falhas = $totalFalhas
-    $sync.Done = $true
+  }
+  catch {
+      # Erro fora do loop de jobs: registra e deixa o finally liberar a janela
+      $sync.Fatal = $_.Exception.ToString()
+      $totalFalhas++
+  }
+  finally {
+      $sync.Falhas = $totalFalhas
+      $sync.Done   = $true
+  }
 }
 
 # ---------------------------------------------------------------- EXECUCAO
@@ -1010,13 +1118,18 @@ $BtnRun.Add_Click({
     $ps = [powershell]::Create()
     $ps.Runspace = $rs
     $ps.AddScript($worker) | Out-Null
-    $ps.BeginInvoke() | Out-Null
+
+    # Guardados para o poll saber se o runspace morreu calado
+    $script:PsWorker = $ps
+    $script:HdWorker = $ps.BeginInvoke()
 })
 
 $sync.Done = $false
 $script:PodeFechar = $false
 $script:Finalizando = $false
 $script:Restante = 30
+$script:PsWorker = $null
+$script:HdWorker = $null
 
 function Encerrar {
     $script:PodeFechar = $true
@@ -1044,10 +1157,20 @@ $timerConta.Add_Tick({
 $timerPoll = New-Object Windows.Threading.DispatcherTimer
 $timerPoll.Interval = [TimeSpan]::FromMilliseconds(400)
 $timerPoll.Add_Tick({
+
+    # Runspace terminou sem sinalizar: mostra o erro real em vez de travar a janela
+    if ($script:HdWorker -and $script:HdWorker.IsCompleted -and -not $sync.Done) {
+        foreach ($e in $script:PsWorker.Streams.Error) { Write-Log "FATAL: $e" "#F87171" }
+        if ($sync.Fatal) { Write-Log "FATAL: $($sync.Fatal)" "#F87171" }
+        $sync.Falhas = 99
+        $sync.Done = $true
+    }
+
     if ($sync.Done -and -not $script:Finalizando) {
         $script:Finalizando = $true
         $timerPoll.Stop()
         $Spinner.Visibility = "Collapsed"
+        if ($sync.Fatal) { Write-Log "Erro fatal: $($sync.Fatal)" "#F87171" }
         if ($sync.Falhas -gt 0) {
             $DoneTitle.Text = "Preparacao concluida com avisos"
             $DoneMsg.Text = "$($sync.Falhas) item(ns) nao foram instalados. Confira o log antes de entregar a maquina."
