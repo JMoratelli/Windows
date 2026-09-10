@@ -409,47 +409,70 @@ function Add-PrinterRow {
 
     $entry = [pscustomobject]@{ Grid=$g; Ip=$ip; Nome=$nm; Validado=$false }
 
-    # O "visto" e o unico caminho para a fila: sem ele a linha e ignorada
+    # Referencia a Write-Log capturada como VARIAVEL (nao por nome) antes do
+    # closure. GetNewClosure() so garante snapshot confiavel de variaveis do
+    # escopo - funcao chamada por nome de dentro de um handler de evento .NET
+    # (Add_Click) as vezes nao resolve o escopo do script direito, derrubando
+    # o handler inteiro com "termo nao reconhecido" e travando a janela.
+    $logFn = ${function:Write-Log}
+    $arquivoErro = Join-Path $env:TEMP "InstalaWindows-erro-impressora.log"
+
+    # O "visto" e o unico caminho para a fila: sem ele a linha e ignorada.
+    # Tudo dentro de try/catch: um erro aqui nao pode mais derrubar a janela
+    # inteira (o que reiniciava todo o instalador via retry do bootstrapper).
     $ok.Add_Click({
-        $vIp = $ip.Text.Trim()
-        $vNm = $nm.Text.Trim().ToUpper()
-        $ip.BorderBrush = "#ABADB3"; $nm.BorderBrush = "#ABADB3"
+        try {
+            $vIp = $ip.Text.Trim()
+            $vNm = $nm.Text.Trim().ToUpper()
+            $ip.BorderBrush = "#ABADB3"; $nm.BorderBrush = "#ABADB3"
 
-        if ($vIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
-            $ip.BorderBrush = "#C01C28"
-            Write-Log "IP invalido: '$vIp'" "#F87171"
-            $ip.Focus() | Out-Null
-            return
-        }
-        if ($vNm -notmatch '(?i)^KY-([^-]+)-(ATAC|LJ\d{2})$') {
-            $nm.BorderBrush = "#C01C28"
-            Write-Log "Nome fora do padrao: use KY-AREA-ATAC ou KY-AREA-LJxx." "#F87171"
-            $nm.Focus() | Out-Null
-            return
-        }
-        foreach ($outro in $PrinterRows) {
-            if ($outro -eq $entry) { continue }
-            if (-not $outro.Validado) { continue }
-            if ($outro.Ip.Text.Trim() -eq $vIp) {
-                $ip.BorderBrush = "#C01C28"; Write-Log "IP $vIp ja esta na fila." "#F87171"; return
+            if ($vIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
+                $ip.BorderBrush = "#C01C28"
+                & $logFn "IP invalido: '$vIp'" "#F87171"
+                $ip.Focus() | Out-Null
+                return
             }
-            if ($outro.Nome.Text.Trim().ToUpper() -eq $vNm) {
-                $nm.BorderBrush = "#C01C28"; Write-Log "Nome $vNm ja esta na fila." "#F87171"; return
+            if ($vNm -notmatch '(?i)^KY-([^-]+)-(ATAC|LJ\d{2})$') {
+                $nm.BorderBrush = "#C01C28"
+                & $logFn "Nome fora do padrao: use KY-AREA-ATAC ou KY-AREA-LJxx." "#F87171"
+                $nm.Focus() | Out-Null
+                return
             }
-        }
+            foreach ($outro in $PrinterRows) {
+                if ($outro -eq $entry) { continue }
+                if (-not $outro.Validado) { continue }
+                if ($outro.Ip.Text.Trim() -eq $vIp) {
+                    $ip.BorderBrush = "#C01C28"; & $logFn "IP $vIp ja esta na fila." "#F87171"; return
+                }
+                if ($outro.Nome.Text.Trim().ToUpper() -eq $vNm) {
+                    $nm.BorderBrush = "#C01C28"; & $logFn "Nome $vNm ja esta na fila." "#F87171"; return
+                }
+            }
 
-        $nm.Text = $vNm
-        $ip.IsReadOnly = $true; $nm.IsReadOnly = $true
-        $ip.Background = "#EDEFF2"; $nm.Background = "#EDEFF2"
-        $ip.BorderBrush = "#0A6F66"; $nm.BorderBrush = "#0A6F66"
-        $ok.Visibility = "Collapsed"
-        $entry.Validado = $true
-        Write-Log "$vNm ($vIp) validada e na fila." "#22C55E"
+            $nm.Text = $vNm
+            $ip.IsReadOnly = $true; $nm.IsReadOnly = $true
+            $ip.Background = "#EDEFF2"; $nm.Background = "#EDEFF2"
+            $ip.BorderBrush = "#0A6F66"; $nm.BorderBrush = "#0A6F66"
+            $ok.Visibility = "Collapsed"
+            $entry.Validado = $true
+            & $logFn "$vNm ($vIp) validada e na fila." "#22C55E"
+        }
+        catch {
+            $detalhe = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] validar impressora: $($_.Exception.GetType().FullName): $($_.Exception.Message)`r`n$($_.ScriptStackTrace)`r`n"
+            try { Add-Content -LiteralPath $arquivoErro -Value $detalhe -Encoding UTF8 } catch { }
+            try { & $logFn "Erro ao validar a linha - detalhes em $arquivoErro" "#F87171" } catch { }
+        }
     }.GetNewClosure())
 
     $rm.Add_Click({
-        $PrintersPanel.Children.Remove($g)
-        $PrinterRows.Remove($entry)
+        try {
+            $PrintersPanel.Children.Remove($g)
+            $PrinterRows.Remove($entry)
+        }
+        catch {
+            $detalhe = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] remover impressora: $($_.Exception.GetType().FullName): $($_.Exception.Message)`r`n$($_.ScriptStackTrace)`r`n"
+            try { Add-Content -LiteralPath $arquivoErro -Value $detalhe -Encoding UTF8 } catch { }
+        }
     }.GetNewClosure())
 
     $PrintersPanel.Children.Add($g) | Out-Null
