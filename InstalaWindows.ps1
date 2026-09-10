@@ -862,54 +862,102 @@ $worker = {
                 }
 
                 'impressoras' {
-                    $TempDir = "C:\KyoceraDrivers"
+                    $TempDir           = "C:\KyoceraDrivers"
+                    $DriverGDriveFileId = "1YJC2UHbEAAihMMqgS980WbLZe7q4AQ7S"
+                    # O fluxo antigo (pegar drive.google.com/uc?export=download e raspar um
+                    # token "confirm=xxx" do HTML de resposta) quebrou: o Google agora as
+                    # vezes devolve uma pagina de aviso "Virus scan warning" cujo formulario
+                    # de confirmacao nao tem mais esse padrao no HTML (o token vem em campo
+                    # oculto separado), entao a regex nunca casava e o download baixava so a
+                    # pagina de aviso (poucos KB) em vez do pacote. O endpoint abaixo devolve
+                    # o arquivo direto (e responde HEAD com Content-Length/Last-Modified reais).
+                    $DriverGDriveUrl = "https://drive.usercontent.google.com/download?id=$DriverGDriveFileId&export=download&confirm=t"
                     if (-not (Test-Path -LiteralPath $TempDir)) {
                         New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
                     }
+
+                    function Get-GoogleDriveTamanho([string]$Url) {
+                        $req = [System.Net.HttpWebRequest]::Create($Url)
+                        $req.Method = "HEAD"
+                        $resp = $req.GetResponse()
+                        try { return "$($resp.ContentLength)|$($resp.Headers['Last-Modified'])" } finally { $resp.Close() }
+                    }
+
+                    function Baixar-DoGoogleDrive([string]$Url, [string]$Destino) {
+                        $req = [System.Net.HttpWebRequest]::Create($Url)
+                        $resposta = $req.GetResponse()
+                        $totalBytes = $resposta.ContentLength
+                        $streamEntrada = $resposta.GetResponseStream()
+                        $streamSaida = [System.IO.File]::Create($Destino)
+                        $buffer = New-Object byte[] 65536
+                        $totalLido = 0
+                        $relogio = [System.Diagnostics.Stopwatch]::StartNew()
+                        try {
+                            while (($lido = $streamEntrada.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                                $streamSaida.Write($buffer, 0, $lido)
+                                $totalLido += $lido
+                                if ($relogio.ElapsedMilliseconds -gt 2000) {
+                                    $recebidoMB = [math]::Round($totalLido / 1MB, 1)
+                                    if ($totalBytes -gt 0) {
+                                        $pct = [math]::Round(($totalLido / $totalBytes) * 100)
+                                        $totalMB = [math]::Round($totalBytes / 1MB, 1)
+                                        W "   baixando drivers... $pct% ($recebidoMB MB de $totalMB MB)"
+                                    } else {
+                                        W "   baixando drivers... $recebidoMB MB"
+                                    }
+                                    $relogio.Restart()
+                                }
+                            }
+                        }
+                        finally {
+                            $streamSaida.Close(); $streamEntrada.Close(); $resposta.Close()
+                        }
+                        return $totalLido
+                    }
+
+                    # ------------------------------------- cache local x pacote no Google Drive
+                    # Sem isso, uma vez extraido em C:\KyoceraDrivers o pacote nunca era
+                    # atualizado nesta maquina, mesmo que o pacote no Drive fosse trocado por
+                    # um mais novo (com modelos novos, ex: MA5500ifx).
+                    $VersaoMarcador = Join-Path $TempDir ".pacote-versao"
+                    $versaoRemota = $null
+                    try {
+                        $versaoRemota = Get-GoogleDriveTamanho $DriverGDriveUrl
+                        $versaoLocal  = if (Test-Path -LiteralPath $VersaoMarcador) { Get-Content -LiteralPath $VersaoMarcador -Raw -ErrorAction SilentlyContinue } else { $null }
+                        if ($versaoLocal -and $versaoLocal.Trim() -ne $versaoRemota) {
+                            W "   pacote de drivers mudou no Google Drive, atualizando cache local..." "#93A5B8"
+                            Get-ChildItem -LiteralPath $TempDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    catch { W "   aviso: nao foi possivel checar versao do pacote no Google Drive - usando cache local" "#F59E0B" }
 
                     # ------------------------------------- pacote de drivers
                     $Infs = @(Get-ChildItem -LiteralPath $TempDir -Filter "OEMSETUP.INF" -Recurse -ErrorAction SilentlyContinue)
 
                     if ($Infs.Count -eq 0) {
-                        $zip  = Join-Path $TempDir "drivers.zip"
                         $sete = Join-Path $TempDir "drivers.7z"
 
-                        if (-not (Test-Path -LiteralPath $zip) -and -not (Test-Path -LiteralPath $sete)) {
+                        if (-not (Test-Path -LiteralPath $sete)) {
+                            W "   baixando pacote de drivers do Google Drive..."
                             try {
-                                W "   baixando KyoceraDrivers.zip..."
-                                Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.zip" `
-                                    -OutFile $zip -UseBasicParsing -TimeoutSec 900 -ErrorAction Stop
+                                Baixar-DoGoogleDrive -Url $DriverGDriveUrl -Destino $sete | Out-Null
                             }
                             catch {
-                                # apaga o parcial, senao o Test-Path abaixo acha que veio inteiro
-                                Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
-                                W "   zip indisponivel, tentando o 7z..." "#93A5B8"
-                                try {
-                                    Invoke-WebRequest -Uri "$($sync.BaseUrl)KyoceraDrivers.7z" `
-                                        -OutFile $sete -UseBasicParsing -TimeoutSec 900 -ErrorAction Stop
-                                }
-                                catch {
-                                    Remove-Item -LiteralPath $sete -Force -ErrorAction SilentlyContinue
-                                    throw "nao foi possivel baixar o pacote de drivers do servidor"
-                                }
+                                Remove-Item -LiteralPath $sete -Force -ErrorAction SilentlyContinue
+                                throw "nao foi possivel baixar o pacote de drivers do Google Drive: $($_.Exception.Message)"
                             }
                         }
 
-                        if (Test-Path -LiteralPath $zip) {
-                            W "   extraindo com Expand-Archive (pode demorar)..."
-                            Expand-Archive -LiteralPath $zip -DestinationPath $TempDir -Force -ErrorAction Stop
+                        $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+                        if (-not (Test-Path -LiteralPath $sevenZip)) {
+                            throw "pacote em .7z e o 7-Zip nao esta instalado nesta maquina"
                         }
-                        else {
-                            $sevenZip = "C:\Program Files\7-Zip\7z.exe"
-                            if (-not (Test-Path -LiteralPath $sevenZip)) {
-                                throw "pacote em .7z e o 7-Zip nao esta instalado nesta maquina"
-                            }
-                            W "   extraindo com 7-Zip..."
-                            & $sevenZip x $sete "-o$TempDir" -y | Out-Null
-                            if ($LASTEXITCODE -ne 0) { throw "7-Zip retornou $LASTEXITCODE" }
-                        }
+                        W "   extraindo com 7-Zip..."
+                        & $sevenZip x $sete "-o$TempDir" -y | Out-Null
+                        if ($LASTEXITCODE -ne 0) { throw "7-Zip retornou $LASTEXITCODE" }
 
                         $Infs = @(Get-ChildItem -LiteralPath $TempDir -Filter "OEMSETUP.INF" -Recurse)
+                        if ($versaoRemota) { Set-Content -LiteralPath $VersaoMarcador -Value $versaoRemota -Force }
                     }
 
                     if ($Infs.Count -eq 0) { throw "nenhum OEMSETUP.INF apos a extracao" }
@@ -950,13 +998,35 @@ $worker = {
                             if (-not $modelo) { throw "sem resposta SNMP" }
                             W "   hardware: $modelo"
 
-                            $core = ($modelo -split '[\s,]+' | Where-Object { $_ -match '\d' } | Select-Object -First 1)
+                            # Regex em vez de "primeiro token com digito": pega so o codigo do
+                            # modelo (ex: MA5500ifx, M3655idn), ignorando lixo que o SNMP as
+                            # vezes gruda no mesmo token (parenteses, codigo de produto etc.).
+                            $core = [regex]::Match($modelo, '[A-Za-z]{1,4}\d{3,5}[A-Za-z]*').Value
+                            if (-not $core) {
+                                $core = ($modelo -split '[\s,]+' | Where-Object { $_ -match '\d' } | Select-Object -First 1)
+                            }
                             if (-not $core) { $core = $modelo }
 
-                            $achado = $mapa |
-                                      Where-Object { $_.Driver -like "*$core*" -or $_.Secao -like "*$core*" } |
-                                      Select-Object -First 1
-                            if (-not $achado) { throw "driver para '$core' nao localizado no pacote" }
+                            # Variantes fax/scanner (ex: MA5500ifx) podem so existir no INF com
+                            # o sufixo da variante base (ex: MA5500i) - tenta o codigo exato
+                            # primeiro e depois vai cortando sufixo de letra em letra.
+                            $candidatos = New-Object System.Collections.Generic.List[string]
+                            $candidatos.Add($core)
+                            if ($core -match '^([A-Za-z]{1,4}\d{3,5})([A-Za-z]*)$') {
+                                $raiz = $Matches[1]; $sufixo = $Matches[2]
+                                for ($si = $sufixo.Length - 1; $si -ge 0; $si--) {
+                                    $candidatos.Add($raiz + $sufixo.Substring(0, $si))
+                                }
+                            }
+
+                            $achado = $null
+                            foreach ($cand in ($candidatos | Select-Object -Unique)) {
+                                $achado = $mapa |
+                                          Where-Object { $_.Driver -like "*$cand*" -or $_.Secao -like "*$cand*" } |
+                                          Select-Object -First 1
+                                if ($achado) { break }
+                            }
+                            if (-not $achado) { throw "driver para '$core' nao localizado no pacote (modelo SNMP: '$modelo')" }
 
                             $DriverName = $achado.Driver
                             $InfPath    = $achado.Inf
