@@ -180,20 +180,46 @@ function IP-ParaUInt32([string]$ip) {
 
 # ============================================================ AJUDANTES DE MODELO/DRIVER (do script original)
 function Get-CoreModel($modeloCru) {
+    # Regex em vez de "primeiro token com digito": pega so o codigo do modelo
+    # (ex: MA5500ifx, M3655idn, PA5500x), ignorando lixo colado por SNMP em
+    # alguns firmwares (parenteses, codigo de produto, versao etc. grudados
+    # sem espaco no mesmo token).
+    $m = [regex]::Match($modeloCru, '[A-Za-z]{1,4}\d{3,5}[A-Za-z]*')
+    if ($m.Success) { return $m.Value }
+
     $core = $modeloCru -split ' ' | Where-Object { $_ -match '\d' } | Select-Object -First 1
     if (-not $core) { $core = $modeloCru }
     return $core
 }
 
+function Get-VariantesCoreModel($CoreModel) {
+    # Alguns modelos "ifx"/"cifx" (variante com fax) so aparecem no INF com o
+    # sufixo da variante base (ex: driver so tem "MA5500i", modelo detectado
+    # via SNMP eh "MA5500ifx"). Tenta o modelo exato primeiro e depois vai
+    # cortando sufixos de letra em letra ate sobrar so a raiz numerica.
+    $variantes = New-Object System.Collections.Generic.List[string]
+    $variantes.Add($CoreModel)
+    if ($CoreModel -match '^([A-Za-z]{1,4}\d{3,5})([A-Za-z]*)$') {
+        $raiz = $Matches[1]
+        $sufixo = $Matches[2]
+        for ($i = $sufixo.Length - 1; $i -ge 0; $i--) {
+            $variantes.Add($raiz + $sufixo.Substring(0, $i))
+        }
+    }
+    return $variantes | Select-Object -Unique
+}
+
 function Find-DriverInfo($InfFiles, $CoreModel) {
-    foreach ($file in $InfFiles) {
-        $linhas = Get-Content $file.FullName
-        foreach ($linha in $linhas) {
-            if ($linha -match '^"([^"]+)"\s*=\s*([^,]+)') {
-                $possivelDriver = $Matches[1].Trim()
-                $possivelSecao  = $Matches[2].Trim()
-                if ($possivelDriver -like "*$CoreModel*" -or $possivelSecao -like "*$CoreModel*") {
-                    return @{ InfPath = $file.FullName; DriverName = $possivelDriver }
+    foreach ($candidato in (Get-VariantesCoreModel $CoreModel)) {
+        foreach ($file in $InfFiles) {
+            $linhas = Get-Content $file.FullName
+            foreach ($linha in $linhas) {
+                if ($linha -match '^"([^"]+)"\s*=\s*([^,]+)') {
+                    $possivelDriver = $Matches[1].Trim()
+                    $possivelSecao  = $Matches[2].Trim()
+                    if ($possivelDriver -like "*$candidato*" -or $possivelSecao -like "*$candidato*") {
+                        return @{ InfPath = $file.FullName; DriverName = $possivelDriver }
+                    }
                 }
             }
         }
@@ -894,7 +920,7 @@ function Executar-FilaInstalacao($fila) {
         try {
             $coreModel = Get-CoreModel $itemFila.Modelo
             $driverInfo = Find-DriverInfo $script:InfFiles $coreModel
-            if (-not $driverInfo) { throw "Driver nao localizado no pacote INF." }
+            if (-not $driverInfo) { throw "Driver nao localizado no pacote INF (modelo SNMP: '$($itemFila.Modelo)', codigo procurado: '$coreModel')." }
             $instalou = Install-ImpressoraKyocera -IpAlvo $itemFila.IP -DriverInfo $driverInfo -NomeFinal $itemFila.NomeFinal -StatusCallback {
                 param($etapa)
                 $lstInstLog.Items[$lstInstLog.Items.Count - 1] = "-> $($itemFila.NomeFinal) ($($itemFila.IP)): $etapa"
