@@ -200,10 +200,16 @@ function MesmaVersao($info) {
 
 # Baixa o exe e confere com o SHA256 publicado. Devolve o caminho ou $null
 # se nao der (sem internet, download corrompido).
+# O download vai para dentro de Program Files\RTSP2CAM (e nao para a TEMP):
+# assim a mesma exclusao de pasta do antivirus cobre instalador e programa.
 function Baixar($info) {
     Get-ChildItem -Path $env:TEMP -Filter 'rtsp2cam-*.exe' -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
-    $destino = Join-Path $env:TEMP ("rtsp2cam-{0}.exe" -f [guid]::NewGuid().ToString('N'))
+    $pasta = Join-Path $env:ProgramFiles 'RTSP2CAM\atualizacao'
+    New-Item -ItemType Directory -Force -Path $pasta | Out-Null
+    Get-ChildItem -Path $pasta -Filter '*.exe' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $destino = Join-Path $pasta ("RTSP2CAM-{0}.exe" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
     $esperado = $info.Hash
     try {
         Invoke-WebRequest -Uri $script:ExeUrl -OutFile $destino -UseBasicParsing -TimeoutSec 300
