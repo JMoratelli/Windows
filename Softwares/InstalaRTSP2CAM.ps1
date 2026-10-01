@@ -170,18 +170,42 @@ function Esperar($ms) {
 
 function Hash($arquivo) { (Get-FileHash -Path $arquivo -Algorithm SHA256).Hash.ToUpperInvariant() }
 
-# Baixa o exe e confere com o .sha256 publicado ao lado. Devolve o caminho
-# ou $null se nao der (sem internet, download corrompido).
-function Baixar {
-    Get-ChildItem -Path $env:TEMP -Filter 'rtsp2cam-*.exe' -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-    $destino = Join-Path $env:TEMP ("rtsp2cam-{0}.exe" -f [guid]::NewGuid().ToString('N'))
+# Consulta a versao publicada sem baixar o exe: tamanho (cabecalho HTTP) e
+# SHA256 (arquivo de 64 bytes). Devolve $null sem internet.
+function InfoRemota {
     try {
+        $cab = Invoke-WebRequest -Uri $script:ExeUrl -Method Head -UseBasicParsing -TimeoutSec 30
+        $tamanho = [int64]($cab.Headers['Content-Length'] | Select-Object -First 1)
         $resp = Invoke-WebRequest -Uri $script:HashUrl -UseBasicParsing -TimeoutSec 30
         # Conforme o servidor, o conteudo vem como texto ou como bytes.
         $texto = if ($resp.Content -is [byte[]]) { [Text.Encoding]::ASCII.GetString($resp.Content) } else { [string]$resp.Content }
-        $esperado = ($texto.Trim() -split '\s+')[0].ToUpperInvariant()
-        if ($esperado -notmatch '^[0-9A-F]{64}$') { throw "arquivo .sha256 invalido" }
+        $hash = ($texto.Trim() -split '\s+')[0].ToUpperInvariant()
+        if ($hash -notmatch '^[0-9A-F]{64}$') { throw "arquivo .sha256 invalido" }
+        return @{ Tamanho = $tamanho; Hash = $hash }
+    }
+    catch {
+        $script:ErroDownload = $_.Exception.Message
+        return $null
+    }
+}
+
+# Mesmo tamanho E mesmo SHA256 = mesma versao. So o tamanho nao basta: dois
+# builds diferentes podem ter o mesmo tamanho (o exe e alinhado em blocos).
+function MesmaVersao($info) {
+    if (-not $info -or -not (Test-Path $script:Instalado)) { return $false }
+    $local = Get-Item $script:Instalado
+    if ($info.Tamanho -gt 0 -and $local.Length -ne $info.Tamanho) { return $false }
+    return (Hash $script:Instalado) -eq $info.Hash
+}
+
+# Baixa o exe e confere com o SHA256 publicado. Devolve o caminho ou $null
+# se nao der (sem internet, download corrompido).
+function Baixar($info) {
+    Get-ChildItem -Path $env:TEMP -Filter 'rtsp2cam-*.exe' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $destino = Join-Path $env:TEMP ("rtsp2cam-{0}.exe" -f [guid]::NewGuid().ToString('N'))
+    $esperado = $info.Hash
+    try {
         Invoke-WebRequest -Uri $script:ExeUrl -OutFile $destino -UseBasicParsing -TimeoutSec 300
     }
     catch {
@@ -232,34 +256,48 @@ function Executar {
     LimparTemporariosAntigos
     $antiga = TemVersaoAntiga
 
-    Mensagem "Baixando a versao mais recente do RTSP2CAM..." $CorGrafite
-    $baixado = Baixar
+    Mensagem "Verificando a versao publicada do RTSP2CAM..." $CorGrafite
+    $info     = InfoRemota
     $temLocal = Test-Path $script:Instalado
+    $servico  = [bool](Get-Service -Name 'RTSP2CAM' -ErrorAction SilentlyContinue)
+    $mesma    = MesmaVersao $info
 
-    if ($antiga -and ($baixado -or $temLocal)) {
-        # Sobrou algo da versao antiga: sempre passa pelo --instalar, que limpa.
-        $exe = if ($baixado) { $baixado } else { $script:Instalado }
-        Mensagem "Removendo a versao antiga (softcam) e instalando o RTSP2CAM novo. A configuracao da camera e aproveitada..." $CorVerde
-        Abrir $exe '--instalar'
+    if ($mesma -and $servico -and -not $antiga) {
+        # Nada a baixar: so reconfigurar.
+        Mensagem "Ja esta na versao mais recente. Abrindo a configuracao da camera..." $CorVerde
+        Abrir $script:Instalado '--configurar'
     }
-    elseif ($baixado) {
-        if ($temLocal -and ((Hash $baixado) -eq (Hash $script:Instalado))) {
-            Remove-Item $baixado -Force -ErrorAction SilentlyContinue
-            Mensagem "Ja esta na versao mais recente. Abrindo a configuracao da camera..." $CorVerde
-            Abrir $script:Instalado '--configurar'
+    elseif ($mesma) {
+        # Mesmo exe, mas falta o servico ou sobrou a versao antiga: o
+        # --instalar do proprio exe instalado conserta, sem baixar nada.
+        Mensagem "Reparando a instalacao e removendo restos da versao antiga, se houver..." $CorVerde
+        Abrir $script:Instalado '--instalar'
+    }
+    elseif ($info) {
+        Mensagem "Baixando a versao mais recente do RTSP2CAM..." $CorGrafite
+        $baixado = Baixar $info
+        if ($baixado) {
+            $texto = if ($antiga) { "Removendo a versao antiga (softcam) e instalando o RTSP2CAM novo. A configuracao da camera e aproveitada..." }
+                     elseif ($temLocal) { "Atualizando o RTSP2CAM. A configuracao atual e mantida..." }
+                     else { "Abrindo o instalador do RTSP2CAM..." }
+            Mensagem $texto $CorVerde
+            Abrir $baixado '--instalar'
         }
         elseif ($temLocal) {
-            Mensagem "Atualizando o RTSP2CAM. A configuracao atual e mantida..." $CorVerde
-            Abrir $baixado '--instalar'
+            Mensagem "Falha no download ($($script:ErroDownload)). Abrindo a versao ja instalada..." $CorAmbar
+            Abrir $script:Instalado $(if ($servico -and -not $antiga) { '--configurar' } else { '--instalar' })
         }
         else {
-            Mensagem "Abrindo o instalador do RTSP2CAM..." $CorVerde
-            Abrir $baixado '--instalar'
+            $script:Ocupado     = $false
+            $script:btn.Enabled = $true
+            $script:btn.Text    = "Tentar novamente"
+            Mensagem "Nao foi possivel baixar o RTSP2CAM: $($script:ErroDownload)" $CorErro
+            return
         }
     }
     elseif ($temLocal) {
-        Mensagem "Sem acesso ao repositorio ($($script:ErroDownload)). Abrindo a configuracao da versao ja instalada..." $CorAmbar
-        Abrir $script:Instalado '--configurar'
+        Mensagem "Sem acesso ao repositorio ($($script:ErroDownload)). Usando a versao ja instalada..." $CorAmbar
+        Abrir $script:Instalado $(if ($servico -and -not $antiga) { '--configurar' } else { '--instalar' })
     }
     else {
         $script:Ocupado     = $false
