@@ -16,6 +16,10 @@
     Executar:  pelo 1-Menu.ps1, botao direito -> "Executar com o PowerShell"
                ou: powershell -ExecutionPolicy Bypass -File .\InstalaRTSP2CAM.ps1
 
+    Codigo-fonte do RTSP2CAM.exe: repositorio privado JMoratelli/RTSP2CAM
+    (https://github.com/JMoratelli/RTSP2CAM). Aqui ficam so o executavel
+    publicado (RTSP2CAM.exe + .sha256) e este instalador.
+
     Desenvolvido por @JJMoratelli
 #>
 
