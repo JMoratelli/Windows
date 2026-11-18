@@ -28,7 +28,7 @@ $ScriptsMenu = @(
     [PSCustomObject]@{ Legenda = "Instala Ventoy Atualizado";              Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaVentoy.ps1" }
     [PSCustomObject]@{ Legenda = "Instala e configura SIP";                Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaConfiguraGOnnect.ps1" }
     [PSCustomObject]@{ Legenda = "Instala e configura Impressora";         Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaImpressoraKyocera.ps1" }
-    [PSCustomObject]@{ Legenda = "Instala e configura Zanthus";            Url = "https://raw.githubusercontent.com/JMoratelli/Zanthus/refs/heads/main/InstalaPDV/Windows/PostInstallPDV.ps1" }
+    [PSCustomObject]@{ Legenda = "Instala e configura Zanthus";            Url = "https://raw.githubusercontent.com/JMoratelli/Zanthus/refs/heads/main/InstalaPDV/Windows/PostInstallPDV.ps1"; PedeToken = $true }
     [PSCustomObject]@{ Legenda = "Instala IP para WebCam";    Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/Softwares/InstalaRTSP2CAM.ps1" }
     [PSCustomObject]@{ Legenda = "Instala Gravador Raspi";    Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/Softwares/GravaRaspiOS.ps1" }
     [PSCustomObject]@{ Legenda = "Refaz Instalação de pacotes Windows";    Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaWindows.ps1" }
@@ -179,6 +179,126 @@ $script:btnAcao = New-Botao "Executar" ($LARG - 244) 462 190 $script:corAzul
 $script:btnFechar = New-Botao "Sair" ($LARG - 384) 462 130 $script:corGrafite
 $script:Form.AcceptButton = $script:btnAcao
 
+# ============================================================ TOKEN DO ZANTHUS
+# O repositorio Zanthus e privado: a opcao dele pede o token de leitura na hora
+# e o confere antes de disparar. O script roda oculto, e um token errado faria a
+# instalacao falhar sem ninguem ver. O token nunca entra aqui (repositorio publico).
+function Read-TokenZanthus($url) {
+    $script:tkUrl   = $url
+    $script:tkToken = $null
+
+    $script:tkForm                 = New-Object System.Windows.Forms.Form
+    $script:tkForm.Text            = "Token do repositório"
+    $script:tkForm.ClientSize      = New-Object System.Drawing.Size(560, 316)
+    $script:tkForm.StartPosition   = "CenterParent"
+    $script:tkForm.FormBorderStyle = "FixedDialog"
+    $script:tkForm.MaximizeBox     = $false
+    $script:tkForm.MinimizeBox     = $false
+    $script:tkForm.ControlBox      = $false
+    $script:tkForm.ShowInTaskbar   = $false
+    $script:tkForm.TopMost         = $true
+    $script:tkForm.BackColor       = [System.Drawing.Color]::White
+
+    $cabTk           = New-Object System.Windows.Forms.Panel
+    $cabTk.Size      = New-Object System.Drawing.Size(560, 92)
+    $cabTk.BackColor = $script:corPreto
+    $script:tkForm.Controls.Add($cabTk)
+
+    $eyebrowTk           = New-Object System.Windows.Forms.Label
+    $eyebrowTk.Text      = "M A C H A D A O   C O R P"
+    $eyebrowTk.Font      = New-Object System.Drawing.Font("Consolas", 9)
+    $eyebrowTk.ForeColor = $script:corEyebrow
+    $eyebrowTk.Location  = New-Object System.Drawing.Point(34, 18)
+    $eyebrowTk.AutoSize  = $true
+    $cabTk.Controls.Add($eyebrowTk)
+
+    $tituloTk           = New-Object System.Windows.Forms.Label
+    $tituloTk.Text      = "Token do repositório Zanthus"
+    $tituloTk.Font      = New-Object System.Drawing.Font("Segoe UI", 19)
+    $tituloTk.ForeColor = [System.Drawing.Color]::White
+    $tituloTk.Location  = New-Object System.Drawing.Point(32, 38)
+    $tituloTk.AutoSize  = $true
+    $cabTk.Controls.Add($tituloTk)
+
+    $ajudaTk           = New-Object System.Windows.Forms.Label
+    $ajudaTk.Text      = "Cole o token de leitura. Ele está no manual de instalação, no botão Copiar token."
+    $ajudaTk.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
+    $ajudaTk.ForeColor = $script:corGrafite
+    $ajudaTk.Location  = New-Object System.Drawing.Point(36, 114)
+    $ajudaTk.Size      = New-Object System.Drawing.Size(488, 40)
+    $script:tkForm.Controls.Add($ajudaTk)
+
+    $script:tkCampo                       = New-Object System.Windows.Forms.TextBox
+    $script:tkCampo.Font                  = New-Object System.Drawing.Font("Consolas", 14)
+    $script:tkCampo.Location              = New-Object System.Drawing.Point(36, 158)
+    $script:tkCampo.Size                  = New-Object System.Drawing.Size(488, 30)
+    $script:tkCampo.UseSystemPasswordChar = $true
+    $script:tkForm.Controls.Add($script:tkCampo)
+
+    $script:tkAviso           = New-Object System.Windows.Forms.Label
+    $script:tkAviso.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
+    $script:tkAviso.ForeColor = $script:corGrafite
+    $script:tkAviso.Location  = New-Object System.Drawing.Point(36, 196)
+    $script:tkAviso.Size      = New-Object System.Drawing.Size(488, 40)
+    $script:tkForm.Controls.Add($script:tkAviso)
+
+    $script:tkContinuar = New-Object System.Windows.Forms.Button
+    $script:tkVoltar    = New-Object System.Windows.Forms.Button
+    foreach ($b in @(
+        @{ Botao = $script:tkContinuar; Texto = "Continuar"; X = 334; Largura = 190; Fundo = $script:corAzul;    Hover = $script:corAzulH },
+        @{ Botao = $script:tkVoltar;    Texto = "Voltar";    X = 192; Largura = 130; Fundo = $script:corGrafite; Hover = $script:corPreto })) {
+        $b.Botao.Text      = $b.Texto
+        $b.Botao.Font      = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+        $b.Botao.Size      = New-Object System.Drawing.Size($b.Largura, 50)
+        $b.Botao.Location  = New-Object System.Drawing.Point($b.X, 244)
+        $b.Botao.FlatStyle = "Flat"
+        $b.Botao.FlatAppearance.BorderSize = 0
+        $b.Botao.FlatAppearance.MouseOverBackColor = $b.Hover
+        $b.Botao.FlatAppearance.MouseDownBackColor = $b.Hover
+        $b.Botao.BackColor = $b.Fundo
+        $b.Botao.ForeColor = [System.Drawing.Color]::White
+        $script:tkForm.Controls.Add($b.Botao)
+    }
+    $script:tkVoltar.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $script:tkForm.AcceptButton   = $script:tkContinuar
+    $script:tkForm.CancelButton   = $script:tkVoltar
+
+    $script:tkContinuar.Add_Click({
+        $t = $script:tkCampo.Text.Trim()
+        if ($t -notmatch '^[A-Za-z0-9_]+$') {
+            $script:tkAviso.ForeColor = $script:corVinho
+            $script:tkAviso.Text = if ($t) { "O token tem só letras, números e _. Confira se não veio espaço ou quebra de linha." } else { "Cole o token para continuar." }
+            return
+        }
+
+        $script:tkContinuar.Enabled = $false
+        $script:tkContinuar.Text = "Aguarde..."
+        $script:tkAviso.ForeColor = $script:corGrafite
+        $script:tkAviso.Text = "Conferindo o token no GitHub..."
+        [System.Windows.Forms.Application]::DoEvents()
+
+        try {
+            Invoke-WebRequest -UseBasicParsing -Method Head -TimeoutSec 20 `
+                -Headers @{ Authorization = "token $t" } -Uri $script:tkUrl | Out-Null
+            $script:tkToken = $t
+            $script:tkForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        }
+        catch {
+            $codigo = 0
+            if ($_.Exception.Response) { $codigo = [int]$_.Exception.Response.StatusCode }
+            $script:tkAviso.ForeColor = $script:corVinho
+            $script:tkAviso.Text = if ($codigo -in 401, 403, 404) { "O GitHub recusou o token. Confira se ele foi copiado inteiro." } else { "Sem resposta do GitHub: $($_.Exception.Message)" }
+            $script:tkContinuar.Text = "Tentar novamente"
+            $script:tkContinuar.Enabled = $true
+        }
+    })
+
+    $resultado = $script:tkForm.ShowDialog($script:Form)
+    $script:tkForm.Dispose()
+    if ($resultado -eq [System.Windows.Forms.DialogResult]::OK) { return $script:tkToken }
+    return $null
+}
+
 # ============================================================ LOGICA
 $script:btnFechar.Add_Click({
     $script:Concluido = $true
@@ -190,6 +310,17 @@ $script:btnAcao.Add_Click({
 
     $itemSelecionado = $ScriptsMenu[$script:cbScripts.SelectedIndex]
 
+    $cabecalho = ""
+    if ($itemSelecionado.PedeToken) {
+        $token = Read-TokenZanthus $itemSelecionado.Url
+        if (-not $token) {
+            $script:msg.ForeColor = $script:corGrafite
+            $script:msg.Text = "Execução cancelada: token não informado."
+            return
+        }
+        $cabecalho = "-Headers @{ Authorization = 'token $token' } "
+    }
+
     $script:btnAcao.Enabled = $false
     $script:btnFechar.Enabled = $false
     $script:cbScripts.Enabled = $false
@@ -197,7 +328,7 @@ $script:btnAcao.Add_Click({
     $script:msg.Text = "Disparando script $($itemSelecionado.Legenda)..."
     [System.Windows.Forms.Application]::DoEvents()
 
-    $comandoRemoto = "irm '$($itemSelecionado.Url)' | iex"
+    $comandoRemoto = "irm $cabecalho'$($itemSelecionado.Url)' | iex"
     # Sem -NoExit: com a janela oculta, ela ficaria pendurada pra sempre depois
     # que o script terminasse, acumulando processos powershell.exe invisiveis.
     $argumentos = @(
