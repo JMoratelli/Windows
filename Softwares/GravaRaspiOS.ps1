@@ -36,7 +36,6 @@ try {
 $installDir   = "$env:ProgramFiles\GravaRaspiOS"
 $targetScript = Join-Path $installDir "script.ps1"
 $exePath      = Join-Path $installDir "GravaRaspiOS.exe"
-$downloadUrl  = "https://github.com/JMoratelli/Windows/raw/refs/heads/main/Softwares/GravaRaspiOS.exe"
 
 # Cria pasta em Arquivos de Programas
 if (-not (Test-Path $installDir)) {
@@ -51,13 +50,43 @@ if ($originPath -and (Test-Path $originPath) -and ($originPath -ne $targetScript
     Set-Content -Path $targetScript -Value $MyInvocation.MyCommand.Definition -Force
 }
 
-# Baixa o GravaRaspiOS.exe se ainda não existir
-if (-not (Test-Path $exePath)) {
+#region nucleo
+# ==============================================================================
+# NUCLEO EM DIA
+# Compara o SHA-256 do GravaRaspiOS.exe com o SHA256SUMS publicado e, se
+# mudou, baixa, confere e troca. Sem internet, download que nao confere ou
+# .exe em uso, segue com o que esta aqui. Publicar e um passo a parte
+# (nucleo/publicar.sh), entao o que esta publicado ja foi testado.
+# ==============================================================================
+$urlNucleo = if ($env:GRAVARASPIOS_URL) { $env:GRAVARASPIOS_URL } else { "https://raw.githubusercontent.com/JMoratelli/Windows/main/Softwares" }
+function Atualizar-Nucleo([string]$destino) {
+    $novo = [IO.Path]::ChangeExtension($destino, ".novo.exe")
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $exePath -UseBasicParsing
-    } catch { }
+        $somas = (Invoke-WebRequest -Uri "$urlNucleo/GravaRaspiOS.SHA256SUMS" -UseBasicParsing -TimeoutSec 15).Content
+        if ($somas -is [byte[]]) { $somas = [Text.Encoding]::UTF8.GetString($somas) }
+        $esperado = $null
+        foreach ($l in ($somas -split "`r?`n")) {
+            $p = $l.Trim() -split '\s+', 2
+            if ($p.Count -eq 2 -and $p[1].TrimStart('*') -eq "GravaRaspiOS.exe") { $esperado = $p[0].ToLower() }
+        }
+        if ($esperado -notmatch '^[0-9a-f]{64}$') { return "publicacao sem o GravaRaspiOS.exe" }
+        if ((Test-Path $destino) -and ((Get-FileHash $destino -Algorithm SHA256).Hash.ToLower() -eq $esperado)) { return "em dia" }
+        Invoke-WebRequest -Uri "$urlNucleo/GravaRaspiOS.exe" -OutFile $novo -UseBasicParsing -TimeoutSec 180
+        if ((Get-FileHash $novo -Algorithm SHA256).Hash.ToLower() -ne $esperado) { throw "o download nao confere com o SHA-256 publicado" }
+        if ($IsLinux) { chmod 755 $novo }   # pwsh fora do Windows: so nos testes
+        & $novo versao | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "o nucleo novo nao respondeu" }
+        Move-Item -Path $novo -Destination $destino -Force
+        return "atualizado"
+    } catch {
+        return "segue o atual: $($_.Exception.Message)"
+    } finally {
+        if (Test-Path $novo) { Remove-Item $novo -Force -ErrorAction SilentlyContinue }
+    }
 }
+#endregion nucleo
+Atualizar-Nucleo $exePath | Out-Null
 
 # Cria atalho na Área de Trabalho com Ícone de Pendrive (shell32.dll, 7)
 $desktopPath  = [Environment]::GetFolderPath("Desktop")
