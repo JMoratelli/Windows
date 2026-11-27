@@ -26,7 +26,7 @@ Add-Type -AssemblyName System.Drawing
 # ============================================================ DADOS E FUNCOES
 $ScriptsMenu = @(
     [PSCustomObject]@{ Legenda = "Instala Ventoy Atualizado";              Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaVentoy.ps1" }
-    [PSCustomObject]@{ Legenda = "Instala e configura SIP";                Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaConfiguraGOnnect.ps1" }
+    [PSCustomObject]@{ Legenda = "Instala e configura M Calls (SIP)";      Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaConfiguraMCalls.ps1" }
     [PSCustomObject]@{ Legenda = "Instala e configura Impressora";         Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/InstalaImpressoraKyocera.ps1" }
     [PSCustomObject]@{ Legenda = "Instala e configura Zanthus";            Url = "https://raw.githubusercontent.com/JMoratelli/Zanthus/refs/heads/main/InstalaPDV/Windows/PostInstallPDV.ps1"; PedeToken = $true }
     [PSCustomObject]@{ Legenda = "Instala IP para WebCam";    Url = "https://raw.githubusercontent.com/JMoratelli/Windows/refs/heads/main/Softwares/InstalaRTSP2CAM.ps1" }
