@@ -85,8 +85,36 @@ function Atualizar-Nucleo([string]$destino) {
         if (Test-Path $novo) { Remove-Item $novo -Force -ErrorAction SilentlyContinue }
     }
 }
+# O gravaraspios.conf (geracao minima, base, imagens aprovadas, recado) ajusta
+# o gravador sem recompilar: mesma publicacao, conferido pelo mesmo
+# SHA256SUMS, ao lado do nucleo, onde ele o procura. Sem publicacao, fica o
+# que esta aqui (ou o padrao compilado do nucleo).
+function Atualizar-Conf([string]$destino) {
+    $novo = "$destino.novo"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $somas = (Invoke-WebRequest -Uri "$urlNucleo/GravaRaspiOS.SHA256SUMS" -UseBasicParsing -TimeoutSec 15).Content
+        if ($somas -is [byte[]]) { $somas = [Text.Encoding]::UTF8.GetString($somas) }
+        $esperado = $null
+        foreach ($l in ($somas -split "`r?`n")) {
+            $p = $l.Trim() -split '\s+', 2
+            if ($p.Count -eq 2 -and $p[1].TrimStart('*') -eq "gravaraspios.conf") { $esperado = $p[0].ToLower() }
+        }
+        if ($esperado -notmatch '^[0-9a-f]{64}$') { return "publicacao sem o gravaraspios.conf" }
+        if ((Test-Path $destino) -and ((Get-FileHash $destino -Algorithm SHA256).Hash.ToLower() -eq $esperado)) { return "em dia" }
+        Invoke-WebRequest -Uri "$urlNucleo/gravaraspios.conf" -OutFile $novo -UseBasicParsing -TimeoutSec 30
+        if ((Get-FileHash $novo -Algorithm SHA256).Hash.ToLower() -ne $esperado) { throw "o download nao confere com o SHA-256 publicado" }
+        Move-Item -Path $novo -Destination $destino -Force
+        return "atualizado"
+    } catch {
+        return "segue o atual: $($_.Exception.Message)"
+    } finally {
+        if (Test-Path $novo) { Remove-Item $novo -Force -ErrorAction SilentlyContinue }
+    }
+}
 #endregion nucleo
 Atualizar-Nucleo $exePath | Out-Null
+Atualizar-Conf (Join-Path (Split-Path $exePath) "gravaraspios.conf") | Out-Null
 
 # Cria atalho na Área de Trabalho com Ícone de Pendrive (shell32.dll, 7)
 $desktopPath  = [Environment]::GetFolderPath("Desktop")
